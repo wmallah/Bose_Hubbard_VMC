@@ -9,25 +9,29 @@ import ..VMCBoseHubbard: MC_integration
 # -----------------------
 # System parameters
 # -----------------------
-L = 2
-N_target = 2
+L = 12
+N_target = 12
 t = 1.0
 
 # 12x12 U and μ values
-# U_vals = [1.0, 5.0, 10.0]
-# μ_vals = [ -1.277216503225, 1.200161285583, 2.01342553449]
+# U_vals = [i for i in 1.0:1.0:10.0]
+U_vals = [1.0, 5.0, 10.0]
+# μ_vals = zeros(10)
+μ_vals = [-1.277216503225, 1.200161285583, 2.01342553449]
+# U_vals = [10.0]
+# μ_vals = [0.0]
 
 # U and μ values for 2 particles, 4 sites
-# U_vals = [1.0]
-# μ_vals = [-1.996641490650]
+# U_vals = [0.0, 1.0, 5.0, 10.0]
+# μ_vals = [-2.223987815985, -1.996641490650, -0.930098065243, -0.751790527039]
 
 # U and μ values for 2x2
-U_vals = [i for i in 1.0:1.0:10.0]
-μ_vals = [0.0, 0.5, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 3.5, 4.2]
+# U_vals = [i for i in 1.0:1.0:10.0]
+# μ_vals = [0.0, 0.5, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 3.5, 4.2]
 
 dim = "1D"
 grand_canonical = true
-projective = true
+projective = false
 
 lattice = Lattice1D(L)
 ensemble = !grand_canonical ? "C" : "GC"
@@ -47,7 +51,7 @@ for (U, μ) in zip(U_vals, μ_vals)
     sys = System(t, U, μ, lattice)
 
     # Conservative truncation
-    n_max = 2
+    n_max = 12
 
     # -----------------------
     # Optimize κ (MC-error stopping)
@@ -55,7 +59,7 @@ for (U, μ) in zip(U_vals, μ_vals)
     κ_opt, history = optimize_kappa(
         sys, N_target, n_max, grand_canonical, projective;
         κ_init = 1.0,
-        η = 0.005,
+        η = 0.05,
         num_walkers = 400,
         num_MC_steps = 8_000,
         num_equil_steps = 2_000

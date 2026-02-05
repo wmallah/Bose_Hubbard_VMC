@@ -1,6 +1,8 @@
 using Random, Statistics
 using ProgressMeter
 
+Random.seed!(1234)
+
 #=
 Purpose: store information about the VMC results
 Input: mean total energy, STD total mean energy, mean kinetic energy, STD of mean kinetic energy, mean potential energy, STD mean potential energy, acceptance ratio, vector of energies, number of failed moves, total particle number distribution
@@ -57,14 +59,16 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                               num_MC_steps::Int = 30000,
                               num_equil_steps::Int = 5000)
 
+    ensemble = !grand_canonical ? "Canonical" : "Grand Canonical"
+
     # Extract the system size from the number of rows in the adjacency matrix
     L = length(sys.lattice.neighbors)
 
     # Function that takes in the system size and target number of particles and returns a random array for the system configuration
     function random_walker(L::Int, N::Int)
-        idx = randperm(L)[1:N]
+        # idx = randperm(L)[1:N]
         w = zeros(Int, L)
-        for i in idx
+        for i in eachindex(w)
             w[i] = 1
         end
         return w
@@ -75,6 +79,8 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
 
     # Generate the coefficients for the Gutzwiller wavefunction
     wf = generate_coefficients(κ, n_max)
+    # println(exp.(wf.f))
+    # println(sum(exp.(2 .* wf.f)) ≈ 1.0)
 
     # Track total number of particles and number of accepted/failed moves
     PN = zeros(Int, 2000)
@@ -84,7 +90,7 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
     energies, derivative_log_psi, kinetic, potential, total_N = Float64[], Float64[], Float64[], Float64[], Float64[]
 
     # Begin Monte Carlo Loop outer loop (number of steps in our simulation)
-    @showprogress enabled=true "Running Grand Canonical VMC..." for step in 1:num_MC_steps
+    @showprogress enabled=true "Running " * ensemble * " VMC..." for step in 1:num_MC_steps
         # Begin Monte Carlo inner loop (number of walkers/configurations)
         for i in 1:num_walkers
             # Initialize the old and new sets of configurations
@@ -123,13 +129,11 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                 continue
             else
                 # Single-site Gutzwiller log acceptance ratio:
-                # log( |Ψ(new)|^2 / |Ψ(old)|^2 ) = 2*(log|f(n_new)| - log|f(n_old)|)
-                n0 = n_old[site]
-                n1 = n_new[site]
-                log_ratio = 2.0 * (wf.f[n1 + 1] - wf.f[n0 + 1])
+                ratio = acceptance_probability(n_old, n_new, wf)
+                # ratio = acceptance_probability(n_old, n_new, κ)
 
                 # Accept move based on Metropolis-Hastings
-                if isfinite(log_ratio) && log(rand()) < log_ratio
+                if isfinite(ratio) && rand() < ratio
                     walkers[i] = n_new
                     num_accepted_moves += 1
                 else
@@ -151,7 +155,7 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                     # If we are not projecting (non-projective grand canonical or canonical), measure. If we are projecting (projective grand canonical), only measure if the number of particles is our target number of particles
                     if !projective || (projective && N_now == N_target)
                         # Measure the total local energy as well as the kinetic and potential energies separately
-                        E, T, V = local_energy(walkers[i], wf, sys; n_max=n_max)
+                        E, T, V = local_energy(n_new, wf, sys, n_max)
 
                         # If the energy energy is finite, push to the respective vectors
                         if isfinite(E)

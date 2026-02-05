@@ -67,7 +67,7 @@ function optimize_kappa(sys::System, N_target::Int, n_max::Int, grand_canonical:
 
         # ---- Gradient descent update ----
         κ -= η * grad
-        κ = clamp(κ, 1e-12, 10.0)
+        κ = clamp(κ, 1e-15, 10.0)
 
         # Stop and warn if either variational parameter or energy gradient are non-finite
         if !isfinite(κ) || !isfinite(grad)
@@ -77,9 +77,10 @@ function optimize_kappa(sys::System, N_target::Int, n_max::Int, grand_canonical:
 
         # Set new energy as the old energy for next step in loop
         E_old = E_new
+
     end
 
-    # Determine which variational parameter value produced lowest energy and return it
-    _, best_idx = findmin(h -> h.energy, history)
-    return history[best_idx].κ, history
+    final_κ = κ
+
+    return final_κ, history
 end

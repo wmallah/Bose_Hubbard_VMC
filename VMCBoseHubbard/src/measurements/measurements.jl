@@ -5,7 +5,7 @@ Output: total local energy (kinetic + potential - chemical), kinetic energy, pot
 Author: Will Mallah
 Last Updated: 01/25/26
 =#
-function local_energy(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System; n_max = 2)
+function local_energy(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System, n_max)
     log_f = ψ.f                     # shared Gutzwiller coefficient vector
     t, U, μ = sys.t, sys.U, sys.μ
     lattice = sys.lattice
@@ -47,6 +47,7 @@ function local_energy(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System; n
     
     return E_kin + E_pot - μ*N, E_kin, E_pot
 end
+
 
 #=
 Purpose: estimate the gradient of the energy for use in gradient descent optimization
