@@ -15,8 +15,8 @@ function estimate_n_max(κ::Real; cutoff::Real = 1e-6)
             return n - 1
         end
         n += 1
-        if n > 300  # reduced from 1000
-            return 300  # instead of error
+        if n > 300
+            return 300
         end
     end
 end

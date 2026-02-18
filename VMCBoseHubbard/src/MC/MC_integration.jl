@@ -1,7 +1,7 @@
 using Random, Statistics
 using ProgressMeter
 
-Random.seed!(1234)
+Random.seed!(0)
 
 #=
 Purpose: store information about the VMC results
@@ -64,18 +64,47 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
     # Extract the system size from the number of rows in the adjacency matrix
     L = length(sys.lattice.neighbors)
 
-    # Function that takes in the system size and target number of particles and returns a random array for the system configuration
-    function random_walker(L::Int, N::Int)
-        # idx = randperm(L)[1:N]
-        w = zeros(Int, L)
-        for i in eachindex(w)
-            w[i] = 1
+    # Extract the chemical potential
+    μ = sys.μ
+
+    # Function that takes in the system size and target number of particles and returns a random array for the system configuration (taking n_max into account)
+    function random_walker(L::Int, N::Int, n_max::Int)
+        if N > L * n_max
+            error("Impossible: N > L * n_max")
         end
+
+        w = zeros(Int, L)
+        particles_left = N
+
+        while particles_left > 0
+            i = rand(1:L)
+            if w[i] < n_max
+                w[i] += 1
+                particles_left -= 1
+            end
+        end
+
         return w
     end
 
+    function ground_state_like_walker(L::Int, N::Int, n_max::Int)
+        if N > L * n_max
+            error("Impossible: N > L * n_max")
+        end
+
+        w = fill(div(N, L), L)
+        remainder = N % L
+
+        for i in 1:remainder
+            w[i] += 1
+        end
+
+        return w
+    end
+
+
     # Generate an array of random walkers (system configurations) using list comprehension
-    walkers = [random_walker(L, N_target) for _ in 1:num_walkers]    
+    walkers = [ground_state_like_walker(L, N_target, n_max) for _ in 1:num_walkers]    
 
     # Generate the coefficients for the Gutzwiller wavefunction
     wf = generate_coefficients(κ, n_max)
@@ -97,6 +126,9 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
             n_old = walkers[i]
             n_new = copy(n_old)
 
+            # Count the number of particles in the old configuration
+            N_old = sum(n_old)
+
             # Randomly select a site of the current configuration
             site = rand(1:L)
 
@@ -108,39 +140,74 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                 else
                     n_new[site] -= 1
                 end
-            else
-                # Hop particle from random site to random neigbor site
-                from = site
-                to = rand(sys.lattice.neighbors[from])
 
-                n_new[from] -= 1
-                n_new[to] += 1
+                # Count the number of particles in the new configuration
+                N_new = sum(n_new)
 
-                # If move is unphysical, count failed move and continue to walker loop
-                if n_new[to] > n_max
+                # Reject proposed move if unphysical and continue to walker loop
+                if n_new[site] > n_max || n_new[site] < 0
                     num_failed_moves += 1
-                    continue
+                else
+                    ratio = acceptance_probability(n_old, n_new, wf) * exp(μ * (N_new - N_old))
+
+                    # Accept move based on Metropolis-Hastings
+                    if isfinite(ratio) && rand() < ratio
+                        walkers[i] = n_new
+                        num_accepted_moves += 1
+                    else
+                        num_failed_moves += 1
+                    end
                 end
-            end
-
-            # Reject proposed move if unphysical and continue to walker loop
-            if n_new[site] > n_max || n_new[site] < 0
-                num_failed_moves += 1
-                continue
             else
-                # Single-site Gutzwiller log acceptance ratio:
-                ratio = acceptance_probability(n_old, n_new, wf)
-                # ratio = acceptance_probability(n_old, n_new, κ)
+                # from = rand(1:L)
+                # site = from
 
-                # Accept move based on Metropolis-Hastings
-                if isfinite(ratio) && rand() < ratio
-                    walkers[i] = n_new
-                    num_accepted_moves += 1
+                # # If move is unphysical, count failed move and continue to walker loop
+                # if n_old[from] == 0
+                #     num_failed_moves += 1
+                #     continue
+                # end
+
+                # to = rand(sys.lattice.neighbors[from])
+
+                # n_new[from] -= 1
+                # n_new[to] += 1    
+                
+                # # If move is unphysical, count failed move and continue to walker loop
+                # if n_new[to] > n_max
+                #     num_failed_moves += 1
+                #     continue
+                # end
+
+                accepted = false
+
+                from = rand(1:L)
+                to   = rand(sys.lattice.neighbors[from])
+
+                if from != to && n_old[from] > 0 && n_old[to] < n_max
+                    n_new[from] -= 1
+                    n_new[to]   += 1
+
+                    ratio = acceptance_probability(n_old, n_new, wf)
+
+                    if isfinite(ratio) && rand() < ratio
+                        walkers[i] = n_new
+                        accepted = true
+                        num_accepted_moves += 1
+                    else
+                        num_failed_moves += 1
+                    end
                 else
                     num_failed_moves += 1
-                    continue
                 end
             end
+
+            # doublon_density = count(walkers[i] .== 2) / L
+            # if doublon_density > 0
+            #     println("Doublon density: $doublon_density")
+            # end
+
+            # println(walkers[i])
             
             # Histogram the total number of particles from the configuration
             N_now = sum(walkers[i])
@@ -155,7 +222,7 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                     # If we are not projecting (non-projective grand canonical or canonical), measure. If we are projecting (projective grand canonical), only measure if the number of particles is our target number of particles
                     if !projective || (projective && N_now == N_target)
                         # Measure the total local energy as well as the kinetic and potential energies separately
-                        E, T, V = local_energy(n_new, wf, sys, n_max)
+                        E, T, V = local_energy(walkers[i], wf, sys, n_max, grand_canonical, projective)
 
                         # If the energy energy is finite, push to the respective vectors
                         if isfinite(E)

@@ -1,5 +1,5 @@
 import ..VMCBoseHubbard: MC_integration
-import ..VMCBoseHubbard: estimate_energy_gradient
+import ..VMCBoseHubbard: estimate_energy_gradient_and_metric
 
 export optimize_kappa
 
@@ -33,7 +33,12 @@ function optimize_kappa(sys::System, N_target::Int, n_max::Int, grand_canonical:
 
     # Intial energy and gradient
     E_old   = result_old.mean_energy
-    grad    = estimate_energy_gradient(result_old)
+    err_old = result_old.sem_energy
+    grad, S = estimate_energy_gradient_and_metric(result_old)
+
+    # Regularization (very important)
+    λ = 1e-6
+    κ -= η * grad / (S + λ)
 
     push!(history, (κ = κ, energy = E_old, gradient = grad))
 
@@ -53,7 +58,11 @@ function optimize_kappa(sys::System, N_target::Int, n_max::Int, grand_canonical:
         # New energy, error for stopping condition, and new gradient for next step
         E_new   = result_new.mean_energy
         err_new = result_new.sem_energy
-        grad    = estimate_energy_gradient(result_new)
+        grad, S = estimate_energy_gradient_and_metric(result_new)
+
+        # Regularization (very important)
+        λ = 1e-6
+        κ -= η * grad / (S + λ)
 
         # Print quick results
         println("κ = $(round(κ, digits=15))  E = $(round(E_new, digits=8)) ± $(round(err_new, digits=8))")
@@ -61,13 +70,17 @@ function optimize_kappa(sys::System, N_target::Int, n_max::Int, grand_canonical:
         push!(history, (κ = κ, energy = E_new, gradient = grad))
 
         # ---- Statistical stopping condition ----
-        if abs(E_new - E_old) < err_new
+        if abs(E_new - E_old) < sqrt(err_new^2 + err_old^2)
             break
         end
 
         # ---- Gradient descent update ----
         κ -= η * grad
         κ = clamp(κ, 1e-15, 10.0)
+
+        if abs(η * grad) > 0.5κ
+            η *= 0.5
+        end
 
         # Stop and warn if either variational parameter or energy gradient are non-finite
         if !isfinite(κ) || !isfinite(grad)
@@ -77,6 +90,7 @@ function optimize_kappa(sys::System, N_target::Int, n_max::Int, grand_canonical:
 
         # Set new energy as the old energy for next step in loop
         E_old = E_new
+        err_old = err_new
 
     end
 

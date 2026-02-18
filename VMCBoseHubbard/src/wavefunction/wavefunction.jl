@@ -25,6 +25,10 @@ function generate_coefficients(κ::Real, n_max::Int; logfact=LOGFACTORIAL_TABLE)
     log_Z = logsumexp(2 .* log_f)
     log_f .-= 0.5 * log_Z
 
+    # println(minimum(abs.(exp.(log_f))))
+    # println(maximum(abs.(exp.(log_f))))
+
+
     return GutzwillerWavefunction(log_f)
 end
 
