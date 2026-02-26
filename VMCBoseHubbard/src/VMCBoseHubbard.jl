@@ -17,6 +17,7 @@ export Lattice1D, Lattice2D
 export System
 export GutzwillerWavefunction
 export estimate_n_max
+export estimate_tau
 export estimate_energy_gradient_and_metric
 export optimize_kappa
 

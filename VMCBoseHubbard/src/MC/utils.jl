@@ -1,5 +1,7 @@
 using Random
 
+export estimate_tau, blocking_error
+
 #=
 Purpose: estimate value for n_max given kappa parameter and cutoff value for decay of Gutzwiller coefficients
 Input: kappa (variational parameter), cutoff (value for coefficient deemed insignificant)
@@ -49,4 +51,99 @@ function run_vmc(sys::System, κ::Real, n_max::Int, N_target::Int; grand_canonic
             error("Unsupported lattice type: $(typeof(lattice))")
         end
     end
+end
+
+#=
+Purpose: calculate the blocking error, which takes autocorrelation time into account
+Input: data in the form of a vector
+Optional Input: block_size (number of consecutive MC samples per block)
+Output: standard error for given data
+Author: Will Mallah
+Last Updated: 02/22/26
+Notes: We partition the time series into contiguous chunks, because correlations exist between nearby samples. This function automatically incorporates autocorrelation as long as block_size > autocorrelation_time
+=#
+function blocking_error(data::Vector{Float64}; block_size::Int=100)
+
+    # Divide total data into blocks evenly
+    N = length(data)
+    n_blocks = div(N, block_size)
+
+    #=
+    You need multiple blocks to estimate the variance of block means.
+    Fewer than ~5 blocks → variance estimate becomes unstable.
+    This prevents nonsense errors.
+    =#
+    if n_blocks < 5
+        error("Not enough blocks for reliable blocking estimate.")
+    end
+
+    #=
+    Truncate to full blocks
+    If N is not an exact multiple of block_size:
+        We discard the remainder
+    This avoids partial blocks that bias variance
+    =#
+    truncated = data[1:(n_blocks * block_size)]
+
+    #=
+    Reshape into blocks
+    Each column is one block
+    Each column contains block_size consecutive MC samples
+    =#
+    blocks = reshape(truncated, block_size, n_blocks)
+
+    #=
+    Compute block means
+    These are averages over correlated chunks
+        Key idea:
+        If block_size > autocorrelation time, then these averages are approximately independent random variables
+        That’s the entire trick of blocking
+    =#
+    block_means = vec(mean(blocks, dims=1))
+
+    #=
+    If block_size ≫ τ:
+    Correlations inside blocks remain.
+    Correlations between blocks vanish.
+    So block means behave like independent samples.
+    Then classical statistics applies.
+    =#
+    # Variance of block means
+    var_blocks = var(block_means)
+
+    # Standard Error (SE)
+    SE = sqrt(var_blocks / n_blocks)
+
+    return SE
+end
+
+
+# τ_int = 1/2 + Σ_{t=1}^{∞} ρ(t)
+function estimate_tau(data::Vector{Float64}; max_lag::Int=1000)
+
+    N = length(data)
+    μ = mean(data)
+    σ2 = var(data)
+
+    τ = 0.5     # intiial value at t=0
+
+    # Cannot send sum to infinity in practice
+    for t in 1:min(max_lag, N-1)
+        c = 0.0
+        for i in 1:(N-t)
+            c += (data[i] - μ)*(data[i+t] - μ)
+        end
+        c /= (N - t)
+
+        ρ = c / σ2
+
+        # Stop summing once ρ becomes negative (prevents noise from blowing up τ artificially)
+        if ρ <= 0
+            break
+        end
+
+        τ += ρ
+    end
+
+    return τ
 end

@@ -71,50 +71,61 @@ end
 
 
 #=
-Purpose: estimate the gradient of the energy for use in gradient descent optimization
-Input: results from Monte Carlo integration
-Output: energy gradient
+Purpose: estimate the gradient of the energy and metric for use in natural gradient descent optimization
+Input: result from Monte Carlo integration and block_size for autocorrelation blocking approximation
+Output: energy gradient, standard error of energy gradient, and metric
 Author: Will Mallah
-Last Updated: 01/25/26
+Last Updated: 02/22/26
 =#
-# function estimate_energy_gradient(result::VMCResults)
-#     # Pull list of energies and list of wavefunction derivatives
-#     E_loc = result.energies
-#     O_k = result.derivative_log_psi
+function estimate_energy_gradient_and_metric(result::VMCResults;
+                                             block_size::Int = 200)
 
-#     # If lists are empty, return NaN
-#     if isempty(E_loc) || isempty(O_k)
-#         return NaN
-#     end
+    E = result.energies
+    O = result.derivative_log_psi
 
-#     # Calculate mean values
-#     mean_E  = mean(E_loc)
-#     mean_O  = mean(O_k)
-#     mean_EO = mean(E_loc .* conj.(O_k))
-
-#     # Return energy gradient (see Sorella "Wave function optimization in the variational Monte Carlo method")
-#     return 2 * real(mean_EO - mean_E * conj(mean_O))
-# end
-
-function estimate_energy_gradient_and_metric(result::VMCResults)
-
-    E_loc = result.energies
-    O_k   = result.derivative_log_psi
-
-    if isempty(E_loc) || isempty(O_k)
-        return NaN, NaN
+    if isempty(E) || isempty(O)
+        return NaN, NaN, NaN
     end
 
-    mean_E  = mean(E_loc)
-    mean_O  = mean(O_k)
-    mean_EO = mean(E_loc .* conj.(O_k))
+    N = length(E)
 
-    # Gradient
-    g = 2 * real(mean_EO - mean_E * conj(mean_O))
+    if N != length(O)
+        error("Energy and derivative arrays must have same length.")
+    end
 
-    # Metric (covariance of O)
-    mean_O2 = mean(abs2.(O_k))
-    S = real(mean_O2 - abs2(mean_O))
+    # ---------- Means ----------
+    mean_E = mean(E)
+    mean_O = mean(O)
 
-    return g, S
+    # ---------- Gradient samples ----------
+    # X_i = 2 (O_i E_i - <O> E_i)
+    X = 2 .* (O .* E .- mean_O .* E)
+
+    g = mean(X)
+
+    # ---------- SR metric ----------
+    S = mean(O.^2) - mean_O^2
+
+    # ---------- Blocking error for gradient ----------
+    n_blocks = div(N, block_size)
+
+    # The minimum number of blocks is arbitrary at the moment, but the more blocks you have, the smaller the error
+    if n_blocks < 5
+        error("Not enough blocks for reliable gradient error estimate.")
+    end
+
+    # Truncate some data so that blocks are same size
+    X_trunc = X[1:(n_blocks * block_size)]
+    # Reshape data so each column is one block and each row is an entry in that block
+    blocks = reshape(X_trunc, block_size, n_blocks)
+
+    # Generate vector that contains mean of each respective block as its elements
+    block_means = vec(mean(blocks, dims=1))
+    # Take the variance of these mean values
+    var_blocks = var(block_means)
+
+    # Calculate the Standard Error of the Gradient (SEG)
+    SE_g = sqrt(var_blocks / n_blocks)
+
+    return g, SE_g, S
 end

@@ -1,7 +1,7 @@
 using Random, Statistics
 using ProgressMeter
 
-Random.seed!(0)
+Random.seed!(1)
 
 #=
 Purpose: store information about the VMC results
@@ -148,7 +148,7 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                 if n_new[site] > n_max || n_new[site] < 0
                     num_failed_moves += 1
                 else
-                    ratio = acceptance_probability(n_old, n_new, wf) * exp(μ * (N_new - N_old))
+                    ratio = acceptance_probability(n_old, n_new, wf) # * exp(μ * (N_new - N_old))
 
                     # Accept move based on Metropolis-Hastings
                     if isfinite(ratio) && rand() < ratio
@@ -159,55 +159,38 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                     end
                 end
             else
-                # from = rand(1:L)
-                # site = from
-
-                # # If move is unphysical, count failed move and continue to walker loop
-                # if n_old[from] == 0
-                #     num_failed_moves += 1
-                #     continue
-                # end
-
-                # to = rand(sys.lattice.neighbors[from])
-
-                # n_new[from] -= 1
-                # n_new[to] += 1    
-                
-                # # If move is unphysical, count failed move and continue to walker loop
-                # if n_new[to] > n_max
-                #     num_failed_moves += 1
-                #     continue
-                # end
-
+                # Just for me to keep track of logic
                 accepted = false
 
+                # Determine source site by randomly selecting number 1 to L
                 from = rand(1:L)
+                # Determine receiver site by randomly selecting from neighbors of source site
                 to   = rand(sys.lattice.neighbors[from])
 
+                # Ensure move is physical
                 if from != to && n_old[from] > 0 && n_old[to] < n_max
+                    # Make move if physical
                     n_new[from] -= 1
                     n_new[to]   += 1
 
+                    # Calculate Metropolis-Hasting's acceptance ratio
                     ratio = acceptance_probability(n_old, n_new, wf)
 
+                    # Accept move with accpetance probabilty if it is finite
                     if isfinite(ratio) && rand() < ratio
+                        # Change walker to new, accepted configuration
                         walkers[i] = n_new
                         accepted = true
                         num_accepted_moves += 1
+                    # Reject move with acceptance probability or if infinite
                     else
                         num_failed_moves += 1
                     end
+                # Reject move if not physical
                 else
                     num_failed_moves += 1
                 end
             end
-
-            # doublon_density = count(walkers[i] .== 2) / L
-            # if doublon_density > 0
-            #     println("Doublon density: $doublon_density")
-            # end
-
-            # println(walkers[i])
             
             # Histogram the total number of particles from the configuration
             N_now = sum(walkers[i])
@@ -221,7 +204,7 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
                 if step >= num_equil_steps
                     # If we are not projecting (non-projective grand canonical or canonical), measure. If we are projecting (projective grand canonical), only measure if the number of particles is our target number of particles
                     if !projective || (projective && N_now == N_target)
-                        # Measure the total local energy as well as the kinetic and potential energies separately
+                        # Measure the total local energy as well as the kinetic and potential energies separately regardless of acceptance
                         E, T, V = local_energy(walkers[i], wf, sys, n_max, grand_canonical, projective)
 
                         # If the energy energy is finite, push to the respective vectors
@@ -259,10 +242,17 @@ function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_
         return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf, 0.0, Float64[], Float64[], num_failed_moves, Int[])
     end
 
+    E_mean = mean(energies)
+    E_error = blocking_error(energies; block_size=200)
+
     return VMCResults(
-        mean(energies), std(energies) / sqrt(length(energies)),
-        mean(kinetic), std(kinetic) / sqrt(length(kinetic)),
-        mean(potential), std(potential) / sqrt(length(potential)),
-        acceptance_ratio, energies, derivative_log_psi, num_failed_moves, PN
+        E_mean, E_error,
+        mean(kinetic), blocking_error(kinetic; block_size=200),
+        mean(potential), blocking_error(potential; block_size=200),
+        acceptance_ratio,
+        energies,
+        derivative_log_psi,
+        num_failed_moves,
+        PN
     )
 end
