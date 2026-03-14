@@ -1,5 +1,8 @@
 using Random, Statistics
 using ProgressMeter
+using FFTW
+
+
 
 Random.seed!(1)
 
@@ -16,9 +19,12 @@ struct VMCResults
     sem_kinetic::Float64
     mean_potential::Float64
     sem_potential::Float64
+    gradient::Vector{Float64}
+    gradient_standard_error::Vector{Float64}
+    metric::Matrix{Float64}
+    num_samples::Int64
     acceptance_ratio::Float64
     energies::Vector{Float64}
-    derivative_log_psi::Vector{Float64}
     num_failed_moves::Int
     PN::Vector{Int}
 end
@@ -54,205 +60,536 @@ Output: struct of variational Monte Carlo results (see struct defined above)
 Author: Will Mallah
 Last Updated: 01/25/26
 =#
-function MC_integration(sys::System, N_target::Int, κ::Real, n_max::Int, grand_canonical, projective;
-                              num_walkers::Int = 200,
-                              num_MC_steps::Int = 30000,
-                              num_equil_steps::Int = 5000)
+function MC_integration_Gutzwiller(sys::System,
+                                   N_target::Int,
+                                   κ::Real,
+                                   n_max::Int,
+                                   grand_canonical,
+                                   projective;
+                                   num_walkers::Int = 200,
+                                   num_MC_steps::Int = 30000,
+                                   num_equil_steps::Int = 5000,
+                                   block_size::Int = 200)
 
     ensemble = !grand_canonical ? "Canonical" : "Grand Canonical"
 
-    # Extract the system size from the number of rows in the adjacency matrix
     L = length(sys.lattice.neighbors)
-
-    # Extract the chemical potential
     μ = sys.μ
 
-    # Function that takes in the system size and target number of particles and returns a random array for the system configuration (taking n_max into account)
-    function random_walker(L::Int, N::Int, n_max::Int)
-        if N > L * n_max
+    ############################################################
+    # Initialize walkers
+    ############################################################
+
+    function ground_state_like_configuration()
+        if N_target > L * n_max
             error("Impossible: N > L * n_max")
         end
 
-        w = zeros(Int, L)
-        particles_left = N
-
-        while particles_left > 0
-            i = rand(1:L)
-            if w[i] < n_max
-                w[i] += 1
-                particles_left -= 1
-            end
-        end
-
-        return w
-    end
-
-    function ground_state_like_walker(L::Int, N::Int, n_max::Int)
-        if N > L * n_max
-            error("Impossible: N > L * n_max")
-        end
-
-        w = fill(div(N, L), L)
-        remainder = N % L
+        n = fill(div(N_target, L), L)
+        remainder = N_target % L
 
         for i in 1:remainder
-            w[i] += 1
+            n[i] += 1
         end
 
-        return w
+        return n
     end
 
+    walkers = [ground_state_like_configuration() for _ in 1:num_walkers]
 
-    # Generate an array of random walkers (system configurations) using list comprehension
-    walkers = [ground_state_like_walker(L, N_target, n_max) for _ in 1:num_walkers]    
-
-    # Generate the coefficients for the Gutzwiller wavefunction
     wf = generate_coefficients(κ, n_max)
-    # println(exp.(wf.f))
-    # println(sum(exp.(2 .* wf.f)) ≈ 1.0)
 
-    # Track total number of particles and number of accepted/failed moves
-    PN = zeros(Int, 2000)
-    num_accepted_moves, num_failed_moves = 0, 0
+    ############################################################
+    # Measurement storage
+    ############################################################
 
-    # Create empty arrays for all the measurements we want to track
-    energies, derivative_log_psi, kinetic, potential, total_N = Float64[], Float64[], Float64[], Float64[], Float64[]
+    PN = zeros(Int, L * n_max)
 
-    # Begin Monte Carlo Loop outer loop (number of steps in our simulation)
+    block_sum_E = 0.0
+    block_sum_T = 0.0
+    block_sum_V = 0.0
+    block_count = 0
+
+    block_means_E = Float64[]
+    block_means_T = Float64[]
+    block_means_V = Float64[]
+
+    derivative_logpsi_blocks = Float64[]
+
+    sum_O  = 0.0
+    sum_OO = 0.0
+    sum_EO = 0.0
+
+    block_sum_g = 0.0
+    block_gradients = Float64[]
+
+    num_samples = 0
+
+    num_accepted_moves = 0
+    num_failed_moves = 0
+
+    ############################################################
+    # Monte Carlo loop
+    ############################################################
+
     @showprogress enabled=true "Running " * ensemble * " VMC..." for step in 1:num_MC_steps
-        # Begin Monte Carlo inner loop (number of walkers/configurations)
+
         for i in 1:num_walkers
-            # Initialize the old and new sets of configurations
-            n_old = walkers[i]
-            n_new = copy(n_old)
 
-            # Count the number of particles in the old configuration
-            N_old = sum(n_old)
+            n = walkers[i]
 
-            # Randomly select a site of the current configuration
-            site = rand(1:L)
-
-            # Either grand canonical (adding/removing particles) or canonical (hopping particles) move proposal
-            if grand_canonical
-                # Add or remove a particle on this site with 50/50 probability
-                if rand() < 0.5
-                    n_new[site] += 1
-                else
-                    n_new[site] -= 1
-                end
-
-                # Count the number of particles in the new configuration
-                N_new = sum(n_new)
-
-                # Reject proposed move if unphysical and continue to walker loop
-                if n_new[site] > n_max || n_new[site] < 0
-                    num_failed_moves += 1
-                else
-                    ratio = acceptance_probability(n_old, n_new, wf) # * exp(μ * (N_new - N_old))
-
-                    # Accept move based on Metropolis-Hastings
-                    if isfinite(ratio) && rand() < ratio
-                        walkers[i] = n_new
-                        num_accepted_moves += 1
-                    else
-                        num_failed_moves += 1
-                    end
-                end
-            else
-                # Just for me to keep track of logic
-                accepted = false
-
-                # Determine source site by randomly selecting number 1 to L
+            from = rand(1:L)
+            while n[from] == 0
                 from = rand(1:L)
-                # Determine receiver site by randomly selecting from neighbors of source site
-                to   = rand(sys.lattice.neighbors[from])
+            end
 
-                # Ensure move is physical
-                if from != to && n_old[from] > 0 && n_old[to] < n_max
-                    # Make move if physical
-                    n_new[from] -= 1
-                    n_new[to]   += 1
+            to = rand(sys.lattice.neighbors[from])
+            while n[to] == n_max
+                to = rand(sys.lattice.neighbors[from])
+            end
 
-                    # Calculate Metropolis-Hasting's acceptance ratio
-                    ratio = acceptance_probability(n_old, n_new, wf)
+            if from != to
 
-                    # Accept move with accpetance probabilty if it is finite
-                    if isfinite(ratio) && rand() < ratio
-                        # Change walker to new, accepted configuration
-                        walkers[i] = n_new
-                        accepted = true
-                        num_accepted_moves += 1
-                    # Reject move with acceptance probability or if infinite
-                    else
-                        num_failed_moves += 1
-                    end
-                # Reject move if not physical
+                # compute ratio using current configuration
+                ratio = acceptance_probability(n, from, to, wf)
+
+                if isfinite(ratio) && rand() < ratio
+
+                    # apply the move
+                    n[from] -= 1
+                    n[to]   += 1
+
+                    num_accepted_moves += 1
+
                 else
                     num_failed_moves += 1
                 end
+
+            else
+                num_failed_moves += 1
             end
-            
-            # Histogram the total number of particles from the configuration
-            N_now = sum(walkers[i])
+
+            ####################################################
+            # Particle number histogram
+            ####################################################
+
+            N_now = sum(n)
+
             if N_now + 1 <= length(PN)
                 PN[N_now + 1] += 1
             end
 
-            # Check to make sure the walkers have physically correct entries
-            if check_and_warn_walker(walkers[i], n_max)
-                # Only make measurements after equilibration and with the target number of particles in the system
-                if step >= num_equil_steps
-                    # If we are not projecting (non-projective grand canonical or canonical), measure. If we are projecting (projective grand canonical), only measure if the number of particles is our target number of particles
-                    if !projective || (projective && N_now == N_target)
-                        # Measure the total local energy as well as the kinetic and potential energies separately regardless of acceptance
-                        E, T, V = local_energy(walkers[i], wf, sys, n_max, grand_canonical, projective)
+            ####################################################
+            # Measurements
+            ####################################################
 
-                        # If the energy energy is finite, push to the respective vectors
-                        if isfinite(E)
-                            push!(energies, E)
-                            push!(kinetic, T)
-                            push!(potential, V)
-                            push!(total_N, N_now)
+            if step >= num_equil_steps
 
-                            # Calculate and track this value (derivative of log psi) for the gradient in our Gradient Descent optimization method
-                            val = -0.5 * sum(walkers[i] .^ 2)
-                            if !isfinite(val)
-                                @warn "Non-finite derivative_log_psi value: $val"
-                            else
-                                push!(derivative_log_psi, val)
-                            end
-                        else
-                            @warn "Non-finite local energy detected: E = $E"
-                            continue
+                if !projective || (projective && N_now == N_target)
+
+                    E, T, V = local_energy(n, wf, sys, n_max, grand_canonical, projective)
+
+                    if isfinite(E)
+
+                        block_sum_E += E
+                        block_sum_T += T
+                        block_sum_V += V
+                        block_count += 1
+
+                        O = -0.5 * sum(n .^ 2)
+
+                        g_sample = 2 * E * O
+                        block_sum_g += g_sample
+
+                        sum_O  += O
+                        sum_OO += O * O
+                        sum_EO += E * O
+
+                        if block_count == block_size
+
+                            push!(block_means_E, block_sum_E / block_size)
+                            push!(block_means_T, block_sum_T / block_size)
+                            push!(block_means_V, block_sum_V / block_size)
+
+                            push!(block_gradients, block_sum_g / block_size)
+
+                            block_sum_E = 0.0
+                            block_sum_T = 0.0
+                            block_sum_V = 0.0
+                            block_sum_g = 0.0
+
+                            block_count = 0
                         end
+
+                        num_samples += 1
                     end
                 end
-            else
-                @warn "Invalid walker skipped"
             end
         end
     end
 
-    # Calculate the acceptance ratio to check if the simulation is accepting or rejecting most proposed moves
+    ############################################################
+    # Final statistics
+    ############################################################
+
     acceptance_ratio = num_accepted_moves / (num_accepted_moves + num_failed_moves)
 
-    # Warn if no valid energy samples were collected
-    if isempty(energies)
+    if isempty(block_means_E)
         @warn "No valid energy samples collected!"
-        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf, 0.0, Float64[], Float64[], num_failed_moves, Int[])
+
+        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf,
+                          Float64[], Float64[], zeros(1,1),
+                          0, acceptance_ratio, Float64[],
+                          num_failed_moves, PN)
     end
 
-    E_mean = mean(energies)
-    E_error = blocking_error(energies; block_size=200)
+    n_blocks = length(block_means_E)
+
+    E_mean = mean(block_means_E)
+    E_error = std(block_means_E) / sqrt(n_blocks)
+
+    O_mean  = sum_O  / num_samples
+    OO_mean = sum_OO / num_samples
+    EO_mean = sum_EO / num_samples
+
+    g = [2 * (EO_mean - E_mean * O_mean)]
+
+    S = [OO_mean - O_mean^2;;]
+
+    g_blocks = reshape(block_gradients, :, 1)
+    g_blocks .-= mean(g_blocks, dims=1)
+
+    SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(size(g_blocks,1))
 
     return VMCResults(
         E_mean, E_error,
-        mean(kinetic), blocking_error(kinetic; block_size=200),
-        mean(potential), blocking_error(potential; block_size=200),
+        mean(block_means_T), std(block_means_T) / sqrt(length(block_means_T)),
+        mean(block_means_V), std(block_means_V) / sqrt(length(block_means_V)),
+        g, SE_g, S,
+        num_samples,
         acceptance_ratio,
-        energies,
-        derivative_log_psi,
+        block_means_E,
         num_failed_moves,
         PN
     )
+end
+
+#=
+Purpose: store all information for our walkers
+Input: n (walker/system configuration in real space), nq (walker/system configuration in momentum space), logpsi (log of our wavefunction)
+Author: Will Mallah
+Last Updated: 03/04/2026
+=#
+mutable struct Walker
+    n::Vector{Int}               # real-space occupations
+    nq::Vector{ComplexF64}       # Fourier density modes
+    logpsi::Float64              # cached log wavefunction
+    N::Int64                     # total particle number
+end
+
+
+
+#=
+Purpose: initialize the walkers, which now contain n (walker/system configuration in real space), nq (walker/system configuration in momentum space), logpsi (log of our wavefunction)
+Input: n (walker/system configuration in real sapce), params (set of Jastrow coefficients), L (system size)
+Output: Walker struct
+Last Updated: 03/05/2026
+=#
+function initialize_walker(n::Vector{Int}, params::JastrowParams, L::Int, N)
+
+    nq = fft(Float64.(n))
+
+    logpsi = compute_logpsi(nq, params, L)
+
+    return Walker(copy(n), nq, logpsi, N)
+
+end
+
+
+function MC_integration_Jastrow(sys::System,
+                                N_target::Int,
+                                params::JastrowParams,
+                                n_max::Int,
+                                grand_canonical,
+                                projective;
+                                num_walkers::Int = 200,
+                                num_MC_steps::Int = 30000,
+                                num_equil_steps::Int = 5000,
+                                block_size::Int = 200)
+
+    # Select wether system is canonical or grand canonical according to the grand_canonical boolean variable (false for canonical, true for grand canonical)
+    ensemble = !grand_canonical ? "Canonical" : "Grand Canonical"
+
+    # Determine the lattice size from the length of the lattice neighbors generated in the sys struct
+    L = length(sys.lattice.neighbors)
+    # Retrieve the value for the chemcial potential from the sys struct
+    μ = sys.μ
+
+    ############################################################
+    # Ground-state-like walker generator
+    ############################################################
+
+    # Intialize the system configurations/walkers as true unit filling plus remainder
+    function ground_state_like_configuration()
+
+        if N_target > L * n_max
+            error("Impossible: N > L * n_max")
+        end
+
+        n = fill(div(N_target, L), L)
+
+        remainder = N_target % L
+
+        for i in 1:remainder
+            n[i] += 1
+        end
+
+        return n
+
+    end
+
+    ############################################################
+    # Initialize walkers
+    ############################################################
+
+    walkers = [initialize_walker(ground_state_like_configuration(), params, L, N_target)
+               for _ in 1:num_walkers]
+
+    ############################################################
+    # Measurement storage
+    ############################################################
+
+    # For histograming total particle number in grand canonical
+    PN = zeros(Int, L * n_max)
+
+    # Blocking sums and vector initialization
+    num_blocks = 0
+    block_sum_E = 0.0
+    block_sum_T = 0.0
+    block_sum_V = 0.0
+    block_count = 0
+
+    block_means_E = Float64[]
+    block_means_T = Float64[]
+    block_means_V = Float64[]
+    total_N = Float64[]
+
+    # Store for gradient and gradient error calculations
+    Nv = length(params.vq)
+
+    sum_O = zeros(Float64, Nv)
+    sum_OO = zeros(Float64, Nv, Nv)
+    sum_EO = zeros(Float64, Nv)
+
+    block_sum_g = zeros(Float64, Nv)
+    block_gradients = Vector{Vector{Float64}}()
+
+    num_samples = 0
+    
+    num_accepted_moves = 0
+    num_failed_moves = 0
+
+    ############################################################
+    # Precompute Fourier phase factors
+    ############################################################
+
+    # [HAVE OUTDATED FUNCTION FOR THIS IN "utils.jl"]
+
+    # Generate possible momentum values
+    qvals = [2π*(k-1)/L for k in 1:L]
+
+    # Initialize phase matrix
+    phase = Matrix{ComplexF64}(undef, L, L)
+
+    # Fill phase matrix
+    for k in 1:L
+        for r in 1:L
+            phase[k,r] = exp(-im * qvals[k] * (r-1))
+        end
+    end
+
+    ############################################################
+    # Monte Carlo loop
+    ############################################################
+
+    @showprogress enabled=true "Running " * ensemble * " VMC..." for step in 1:num_MC_steps
+        # Loop through system configurations/walkers to update
+        for w in walkers
+            # Temporary variable to hold current walker
+            n = w.n
+            # Temporary variable to hold Fourier configuration modes
+            nq = w.nq
+
+            ####################################################
+            # Move proposal
+            ####################################################
+
+            if grand_canonical
+                error("Grand canonical moves not implemented yet")
+                # Select random site in the lattice
+                site = rand(1:L)
+
+                # Add or remove a particle on random site with 50/50 probability (add/remove, respectively)
+                if rand() < 0.5
+                    n[site] += 1
+                else
+                    n[site] -= 1
+                end
+
+                # Expensive to sum walker/configuration every time. Change w.N in walker struct instead after move proposal [FIX FOR GRAND CANONICAL]
+                N_now = sum(n)
+            else
+                # Select random site to be source of move
+                from = rand(1:L)
+                while n[from] == 0
+                    from = rand(1:L)
+                end
+
+                # Select random neighbor (target site) of that previously chosen random site
+                to = rand(sys.lattice.neighbors[from])
+                while n[to] == n_max
+                    to = rand(sys.lattice.neighbors[from])
+                end
+
+                # If the source and target sites aren't the same site (they shouldn't be from how the neighbor matrix is generated), attempt to move a single particle
+                if from != to
+                    n[from] -= 1
+                    n[to] += 1
+                end
+
+                # Total particle number should not change in canonical ensemble
+                N_now = N_target
+            end
+
+            ####################################################
+            # Compute Δlogψ
+            ####################################################
+
+            Δlogψ = compute_delta_logpsi(nq, from, to, phase, params, L)
+
+            log_ratio = 2 * Δlogψ
+
+            ####################################################
+            # Metropolis step
+            ####################################################
+
+            if isfinite(log_ratio) && log(rand()) < log_ratio
+                # Update Fourier components and logpsi if move accepted
+                @inbounds for k in eachindex(nq)
+                    nq[k] += phase[k,to] - phase[k,from]
+                end
+                w.logpsi += Δlogψ
+
+                num_accepted_moves += 1
+            else
+                # Return to originial walker/configuration if move not accepted
+                n[from] += 1
+                n[to]   -= 1
+                num_failed_moves += 1
+            end
+
+            ####################################################
+            # Measurements
+            ####################################################
+
+            # Histogram total number of particles
+            if N_now + 1 <= length(PN)
+                PN[N_now + 1] += 1
+            end
+
+            # Only make measurements after equilibration
+            if step >= num_equil_steps
+
+                if !projective || (projective && N_now == N_target)
+
+                    E, T, V = local_energy_jastrow(L, sys, w, params, phase)
+
+                    if isfinite(E)
+                        block_sum_E += E
+                        block_sum_T += T
+                        block_sum_V += V
+                        block_count += 1
+                        O = logpsi_derivatives(w.nq, L)
+
+                        g_sample = 2 .* (E .* O)
+                        block_sum_g .+= g_sample
+
+                        sum_O  .+= O
+                        sum_OO .+= O * O'
+                        sum_EO .+= E .* O
+                        push!(total_N, N_now)
+
+                        # Once the block counts reach the block size, push to respective vectors and reset sums/count
+                        if block_count == block_size
+                            push!(block_means_E, block_sum_E / block_size)
+                            push!(block_means_T, block_sum_T / block_size)
+                            push!(block_means_V, block_sum_V / block_size)
+                            push!(block_gradients, block_sum_g ./ block_size)
+
+
+                            block_sum_E = 0.0
+                            block_sum_T = 0.0
+                            block_sum_V = 0.0
+                            block_sum_g .= 0.0
+
+                            block_count = 0
+                        end
+
+                        # Count the number of samples taken/blocks for average calculations
+                        num_blocks += 1
+                    end
+
+                end
+            end
+
+        end
+    end
+
+    ############################################################
+    # Final statistics
+    ############################################################
+
+    # Compute acceptance ratio
+    acceptance_ratio = num_accepted_moves / (num_accepted_moves + num_failed_moves)
+
+    # If no energy measurements were taken, warn and return infinity/empty vectors
+    if isempty(block_means_E)
+
+        @warn "No valid energy samples collected!"
+
+        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf,
+                          Float64, Float64[], Float64[],
+                          Inf, Inf, Float64[],
+                          num_failed_moves, Int[])
+
+    end
+
+    # Block means
+    E_mean = mean(block_means_E)
+    E_error = std(block_means_E) / sqrt(num_blocks)
+    O_mean  = sum_O  ./ num_blocks
+    OO_mean = sum_OO ./ num_blocks
+    EO_mean = sum_EO ./ num_blocks
+
+    # Gradient and metric from block means
+    g = 2 .* (EO_mean .- E_mean .* O_mean)
+    S = OO_mean .- O_mean * O_mean'
+
+    # Standard error of the gradient
+    g_blocks = hcat(block_gradients...)'
+    g_blocks .-= mean(g_blocks, dims=1)
+    SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(size(g_blocks,1))
+
+    return VMCResults(
+        E_mean, E_error,
+        mean(block_means_T), std(block_means_T) / sqrt(length(block_means_T)),
+        mean(block_means_V), std(block_means_V) / sqrt(length(block_means_V)),
+        g, SE_g, S,
+        num_samples,
+        acceptance_ratio,
+        block_means_E,
+        num_failed_moves,
+        PN
+    )
+
 end

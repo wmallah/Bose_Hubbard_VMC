@@ -129,3 +129,138 @@ function estimate_energy_gradient_and_metric(result::VMCResults;
 
     return g, SE_g, S
 end
+
+
+function local_energy_jastrow(L, sys, walker::Walker, params::JastrowParams, phase)
+    t, U = sys.t, sys.U
+    lattice = sys.lattice
+    n = walker.n
+    nq = walker.nq
+    vq = params.vq
+
+    E_pot = 0.0
+    log_E_kin_contributions = Float64[]
+    signs = Int[]
+
+    # -------------------------
+    # Interaction energy
+    # -------------------------
+    for i in 1:L
+        ni = n[i]
+        E_pot += (U/2) * ni * (ni - 1)
+    end
+
+    # -------------------------
+    # Hopping energy
+    # -------------------------
+    # -------------------------
+    # Kinetic energy
+    # -------------------------
+
+    # Loop through all lattice sites
+    for i in 1:L
+        # Loop through all neighbors of each site
+        for j in lattice.neighbors[i]
+
+            # Ensure we don't double count
+            if j > i
+
+                # -------------------------
+                # hop j → i
+                # -------------------------
+
+                if n[j] > 0
+
+                    Δnq = similar(nq)
+
+                    Δnq = similar(nq)
+
+                    for k in eachindex(nq)
+                        Δnq[k] = phase[k,i] - phase[k,j]
+                    end
+
+                    log_R = 0.0
+
+                    for m in 1:(L÷2)
+
+                        k = m + 1
+
+                        old = abs2(nq[k])
+                        new = abs2(nq[k] + Δnq[k])
+
+                        log_R += vq[m] * (new - old)
+
+                    end
+
+                    log_R *= -(1/(2L))
+
+                    log_E_kin =
+                        0.5 * log((n[i] + 1) * n[j]) + log_R
+
+                    push!(log_E_kin_contributions, log_E_kin)
+                    push!(signs, -1)
+
+                end
+
+
+                # -------------------------
+                # hop i → j
+                # -------------------------
+
+                if n[i] > 0
+
+                    Δnq = similar(nq)
+
+                    for k in eachindex(nq)
+                        Δnq[k] = phase[k,j] - phase[k,i]
+                    end
+
+                    log_R = 0.0
+
+                    for m in 1:(L÷2)
+
+                        k = m + 1
+
+                        old = abs2(nq[k])
+                        new = abs2(nq[k] + Δnq[k])
+
+                        log_R += vq[m] * (new - old)
+
+                    end
+
+                    log_R *= -(1/(2L))
+
+                    log_E_kin =
+                        0.5 * log((n[j] + 1) * n[i]) + log_R
+
+                    push!(log_E_kin_contributions, log_E_kin)
+                    push!(signs, -1)
+
+                end
+
+            end
+        end
+    end
+
+    log_abs_E, sign_E = signed_logsumexp(log_E_kin_contributions, signs)
+
+    E_kin = sign_E * t * exp(log_abs_E)
+
+    return E_kin + E_pot, E_kin, E_pot
+end
+
+
+function logpsi_derivatives(nq::Vector{ComplexF64}, L::Int)
+
+    M = L ÷ 2
+
+    O = zeros(Float64, M)
+
+    for m in 1:M
+        k = m + 1
+        O[m] = -(1/(2L)) * abs2(nq[k])
+    end
+
+    return O
+
+end
