@@ -32,8 +32,11 @@ function generate_coefficients(κ::Real, n_max::Int; logfact=LOGFACTORIAL_TABLE)
     return GutzwillerWavefunction(log_f)
 end
 
-
 struct GutzwillerWavefunction{T <: Real} <: Wavefunction
     # Vector for coefficients
     f::Vector{T}
+end
+
+struct JastrowParams{T <: Real} <: Wavefunction
+    vq::Vector{T}   # length = L/2
 end

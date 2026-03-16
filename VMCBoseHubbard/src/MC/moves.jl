@@ -23,20 +23,14 @@ Output: sampling ratio between two system states
 Author: Will Mallah
 Last Updated: 02/12/26
 =#
-function acceptance_probability(n_old::Vector{Int},
-                                n_new::Vector{Int},
+function acceptance_probability(n::Vector{Int},
+                                from::Int,
+                                to::Int,
                                 ψ::Wavefunction)
 
-    log_ratio = 0.0
-
-    for i in eachindex(n_old)
-        if n_old[i] != n_new[i]
-            log_ratio += 2 * (
-                ψ.f[n_new[i] + 1] -
-                ψ.f[n_old[i] + 1]
-            )
-        end
-    end
+    log_ratio =
+        2 * (ψ.f[n[from]]     - ψ.f[n[from] + 1]) +
+        2 * (ψ.f[n[to] + 2]   - ψ.f[n[to] + 1])
 
     return log_ratio ≥ 0 ? 1.0 : exp(log_ratio)
 end

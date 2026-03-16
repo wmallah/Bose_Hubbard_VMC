@@ -1,77 +1,228 @@
-import ..VMCBoseHubbard: MC_integration
+using LinearAlgebra
+
+import ..VMCBoseHubbard: MC_integration_Gutzwiller
+import ..VMCBoseHubbard: MC_integration_Jastrow
 import ..VMCBoseHubbard: estimate_energy_gradient_and_metric
 
-export optimize_kappa
+export optimize_kappa_SR, optimize_jastrow_SR
 
-function optimize_kappa(sys::System, N_target::Int, n_max::Int,
-                        grand_canonical::Bool, projective::Bool;
-                        κ_init::Float64 = 1.0,
-                        η::Float64 = 0.05,
-                        num_walkers::Int = 200,
-                        num_MC_steps::Int = 2000,
-                        num_equil_steps::Int = 500,
-                        block_size::Int = 200,
-                        z::Float64 = 2.0)   # confidence level
+function optimize_kappa_SR(sys::System,
+                           N_target::Int,
+                           n_max::Int,
+                           grand_canonical::Bool,
+                           projective::Bool;
+                           κ_init::Float64 = 1.0,
+                           η::Float64 = 0.05,
+                           num_walkers::Int = 200,
+                           num_MC_steps::Int = 30000,
+                           num_equil_steps::Int = 5000,
+                           block_size::Int = 200,
+                           z::Float64 = 1.0)
 
     κ = κ_init
 
     history = Vector{NamedTuple{(:κ,:energy,:gradient,:snr),
                Tuple{Float64,Float64,Float64,Float64}}}()
 
-    λ = 1e-6        # SR regularization
-    max_step = 0.2  # safety limiter
+    λ = 1e-6
+    max_step = 0.2
+    iter = 0
 
     while true
 
-        # --- Monte Carlo ---
-        result = MC_integration(
-            sys, N_target, κ, n_max, grand_canonical, projective;
-            num_walkers = num_walkers,
-            num_MC_steps = num_MC_steps,
-            num_equil_steps = num_equil_steps,
+        ############################################################
+        # Monte Carlo sampling
+        ############################################################
+
+        result = MC_integration_Gutzwiller(
+            sys,
+            N_target,
+            κ,
+            n_max,
+            grand_canonical,
+            projective;
+            num_walkers=num_walkers,
+            num_MC_steps=num_MC_steps,
+            num_equil_steps=num_equil_steps,
+            block_size=block_size
         )
 
         E   = result.mean_energy
         err = result.sem_energy
 
-        # --- Statistical gradient + metric ---
-        g, SE_g, S = estimate_energy_gradient_and_metric(result;
-                                                          block_size=block_size)
+        ############################################################
+        # Gradient and metric from MC
+        ############################################################
 
-        if !isfinite(g) || !isfinite(SE_g) || !isfinite(S)
-            @warn "Stopping: non-finite value encountered"
+        g_vec  = result.gradient
+        SE_vec = result.gradient_standard_error
+        S_mat  = result.metric
+
+        g   = g_vec[1]
+        SEg = SE_vec[1]
+        S   = S_mat[1,1]
+
+        if !isfinite(g) || !isfinite(SEg) || !isfinite(S)
+            @warn "Stopping: non-finite values encountered"
             break
         end
 
-        # Signal to Noise Ratio
-        snr = abs(g) / SE_g
+        ############################################################
+        # Signal-to-noise ratio
+        ############################################################
 
-        println("κ = $(round(κ, digits=10))  " *
-                "E = $(round(E, digits=8)) ± $(round(err, digits=8))  " *
-                "g = $(round(g, digits=6))  SNR = $(round(snr, digits=4))")
+        snr = abs(g) / SEg
 
-        push!(history, (κ = κ,
-                        energy = E,
-                        gradient = g,
-                        snr = snr))
+        println("κ = $(round(κ,digits=10))  " *
+                "E = $(round(E,digits=8)) ± $(round(err,digits=8))  " *
+                "g = $(round(g,digits=6))  " *
+                "SNR = $(round(snr,digits=4))")
 
-        # --- Statistical stopping condition ---
-        if abs(g) < z * SE_g
+        push!(history,
+              (κ = κ,
+               energy = E,
+               gradient = g,
+               snr = snr))
+
+        ############################################################
+        # Statistical convergence test
+        ############################################################
+
+        if abs(g) < z * SEg
             println("Gradient statistically zero (|g| < $(z)σ). Converged.")
             break
         end
 
-        # --- Natural gradient step (Sochastic Reconfiguration) ---
+        ############################################################
+        # Natural gradient step (SR)
+        ############################################################
+
         Δκ = η * g / (S + λ)
 
         if abs(Δκ) > max_step
             Δκ = max_step * sign(Δκ)
         end
 
+        ############################################################
+        # Parameter update
+        ############################################################
+
         κ -= Δκ
         κ = clamp(κ, 1e-12, 10.0)
+
+        ############################################################
+        # Mild learning rate decay
+        ############################################################
+
+        iter += 1
+        η *= 0.998
 
     end
 
     return κ, history
+end
+
+
+function optimize_jastrow_SR(sys::System,
+                             params::JastrowParams,
+                             N_target::Int,
+                             n_max::Int;
+                             η::Float64 = 0.05,
+                             num_walkers::Int = 200,
+                             num_MC_steps::Int = 30000,
+                             num_equil_steps::Int = 5000,
+                             block_size::Int = 200,
+                             z::Float64 = 1.0)
+
+    history = []
+
+    λ = 1e-6
+    max_step = 0.2
+    iter = 0
+
+    while true
+
+        ############################################################
+        # Monte Carlo sampling
+        ############################################################
+
+        result = MC_integration_Jastrow(
+            sys,
+            N_target,
+            params,
+            n_max,
+            false,
+            false;
+            num_walkers=num_walkers,
+            num_MC_steps=num_MC_steps,
+            num_equil_steps=num_equil_steps,
+            block_size=block_size
+        )
+
+        E = result.mean_energy
+        err = result.sem_energy
+
+        ############################################################
+        # Estimate gradient and SR metric
+        ############################################################
+
+        g = result.gradient
+        SE_g = result.gradient_standard_error
+        S = result.metric
+
+        if any(!isfinite, g) || any(!isfinite, SE_g) || any(!isfinite, S)
+            @warn "Stopping: non-finite values encountered"
+            break
+        end
+
+        ############################################################
+        # Signal-to-noise ratios
+        ############################################################
+
+        snr = abs.(g) ./ SE_g
+
+        println("Energy = $(round(E,digits=8)) ± $(round(err,digits=8))")
+        println("Gradient norm = ", norm(g))
+        println("Max SNR = ", maximum(snr))
+
+        push!(history,
+              (params = copy(params.vq),
+               energy = E,
+               gradient = copy(g),
+               snr = copy(snr)))
+
+        ############################################################
+        # Statistical convergence test
+        ############################################################
+
+        if all(abs.(g) .< z .* SE_g)
+            println("All gradient components statistically zero. Converged.")
+            break
+        end
+
+        ############################################################
+        # Natural gradient step (SR)
+        ############################################################
+
+        Δv = η * ((S + λ * I) \ g)
+
+        # step limiter
+        step_norm = norm(Δv)
+        if step_norm > max_step
+            Δv *= max_step / step_norm
+        end
+
+        ############################################################
+        # Parameter update
+        ############################################################
+
+        params.vq .-= Δv
+
+        # Subtle adaptive learning rate update for faster convergence (avoids jumping over minimum)
+        iter += 1
+        η = η * 0.998^iter
+
+    end
+
+    return params, history
 end
