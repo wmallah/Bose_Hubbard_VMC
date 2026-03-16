@@ -1,6 +1,7 @@
 using LinearAlgebra
 
-import ..VMCBoseHubbard: MC_integration
+import ..VMCBoseHubbard: MC_integration_Gutzwiller
+import ..VMCBoseHubbard: MC_integration_Jastrow
 import ..VMCBoseHubbard: estimate_energy_gradient_and_metric
 
 export optimize_kappa_SR, optimize_jastrow_SR
@@ -16,7 +17,7 @@ function optimize_kappa_SR(sys::System,
                            num_MC_steps::Int = 30000,
                            num_equil_steps::Int = 5000,
                            block_size::Int = 200,
-                           z::Float64 = 2.0)
+                           z::Float64 = 1.0)
 
     κ = κ_init
 
@@ -131,7 +132,7 @@ function optimize_jastrow_SR(sys::System,
                              num_MC_steps::Int = 30000,
                              num_equil_steps::Int = 5000,
                              block_size::Int = 200,
-                             z::Float64 = 2.0)
+                             z::Float64 = 1.0)
 
     history = []
 
