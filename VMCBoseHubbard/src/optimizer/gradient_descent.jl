@@ -24,9 +24,8 @@ function optimize_kappa_SR(sys::System,
     history = Vector{NamedTuple{(:κ,:energy,:gradient,:snr),
                Tuple{Float64,Float64,Float64,Float64}}}()
 
-    λ = 1e-6
+    λ = 1e-3
     max_step = 0.2
-    iter = 0
 
     while true
 
@@ -114,7 +113,6 @@ function optimize_kappa_SR(sys::System,
         # Mild learning rate decay
         ############################################################
 
-        iter += 1
         η *= 0.998
 
     end
@@ -136,9 +134,8 @@ function optimize_jastrow_SR(sys::System,
 
     history = []
 
-    λ = 1e-6
+    λ = 1e-3
     max_step = 0.2
-    iter = 0
 
     while true
 
@@ -219,8 +216,7 @@ function optimize_jastrow_SR(sys::System,
         params.vq .-= Δv
 
         # Subtle adaptive learning rate update for faster convergence (avoids jumping over minimum)
-        iter += 1
-        η = η * 0.998^iter
+        η *= 0.998
 
     end
 
