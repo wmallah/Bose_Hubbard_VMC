@@ -295,14 +295,14 @@ Input: n (walker/system configuration in real sapce), params (set of Jastrow coe
 Output: Walker struct
 Last Updated: 03/05/2026
 =#
-function initialize_walker(n::Vector{Int}, params::JastrowParams, L::Int, N)
+function initialize_walker(n::Vector{Int}, params::JastrowParams, L::Int, N::Int)
+    @assert length(n) == L
+    @assert sum(n) == N
 
     nq = fft(Float64.(n))
-
     logpsi = compute_logpsi(nq, params, L)
 
     return Walker(copy(n), nq, logpsi, N)
-
 end
 
 
@@ -363,7 +363,9 @@ function MC_integration_Jastrow(sys::System,
     PN = zeros(Int, L * n_max)
 
     # Blocking sums and vector initialization
-    num_blocks = 0
+    num_completed_blocks = 0
+    num_samples = 0
+
     block_sum_E = 0.0
     block_sum_T = 0.0
     block_sum_V = 0.0
@@ -374,8 +376,8 @@ function MC_integration_Jastrow(sys::System,
     block_means_V = Float64[]
     total_N = Float64[]
 
-    # Store for gradient and gradient error calculations
-    Nv = length(params.vq)
+    npair = num_pair_modes(L)
+    Nv = npair + (has_edge_mode(L) ? 1 : 0)
 
     sum_O = zeros(Float64, Nv)
     sum_OO = zeros(Float64, Nv, Nv)
@@ -509,36 +511,34 @@ function MC_integration_Jastrow(sys::System,
                         block_sum_T += T
                         block_sum_V += V
                         block_count += 1
-                        O = logpsi_derivatives(w.nq, L)
 
-                        g_sample = 2 .* (E .* O)
-                        block_sum_g .+= g_sample
+                        O = logpsi_derivatives(w.nq, L)
 
                         sum_O  .+= O
                         sum_OO .+= O * O'
                         sum_EO .+= E .* O
                         push!(total_N, N_now)
 
-                        # Once the block counts reach the block size, push to respective vectors and reset sums/count
+                        num_samples += 1
+
+                        # accumulate raw contribution for this block
+                        block_sum_g .+= 2 .* (E .* O)
+
                         if block_count == block_size
                             push!(block_means_E, block_sum_E / block_size)
                             push!(block_means_T, block_sum_T / block_size)
                             push!(block_means_V, block_sum_V / block_size)
                             push!(block_gradients, block_sum_g ./ block_size)
 
-
                             block_sum_E = 0.0
                             block_sum_T = 0.0
                             block_sum_V = 0.0
                             block_sum_g .= 0.0
-
                             block_count = 0
+
+                            num_completed_blocks += 1
                         end
-
-                        # Count the number of samples taken/blocks for average calculations
-                        num_blocks += 1
                     end
-
                 end
             end
 
@@ -550,26 +550,36 @@ function MC_integration_Jastrow(sys::System,
     ############################################################
 
     # Compute acceptance ratio
-    acceptance_ratio = num_accepted_moves / (num_accepted_moves + num_failed_moves)
+    n_attempts = num_accepted_moves + num_failed_moves
+    acceptance_ratio = n_attempts > 0 ? num_accepted_moves / n_attempts : 0.0
 
-    # If no energy measurements were taken, warn and return infinity/empty vectors
-    if isempty(block_means_E)
+    # If no valid blocked samples were collected, warn and return
+    if num_completed_blocks == 0 || num_samples == 0
 
-        @warn "No valid energy samples collected!"
+        @warn "No valid blocked samples collected!"
 
-        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf,
-                          Float64, Float64[], Float64[],
-                          Inf, Inf, Float64[],
-                          num_failed_moves, Int[])
+        return VMCResults(
+            Inf, Inf,
+            Inf, Inf,
+            Inf, Inf,
+            Float64[], Float64[], zeros(Float64, 0, 0),
+            num_samples,
+            acceptance_ratio,
+            Float64[],
+            num_failed_moves,
+            PN
+        )
 
     end
 
+
     # Block means
     E_mean = mean(block_means_E)
-    E_error = std(block_means_E) / sqrt(num_blocks)
-    O_mean  = sum_O  ./ num_blocks
-    OO_mean = sum_OO ./ num_blocks
-    EO_mean = sum_EO ./ num_blocks
+    E_error = std(block_means_E) / sqrt(num_completed_blocks)
+
+    O_mean  = sum_O  ./ num_samples
+    OO_mean = sum_OO ./ num_samples
+    EO_mean = sum_EO ./ num_samples
 
     # Gradient and metric from block means
     g = 2 .* (EO_mean .- E_mean .* O_mean)
@@ -578,7 +588,7 @@ function MC_integration_Jastrow(sys::System,
     # Standard error of the gradient
     g_blocks = hcat(block_gradients...)'
     g_blocks .-= mean(g_blocks, dims=1)
-    SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(size(g_blocks,1))
+    SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(num_completed_blocks)
 
     return VMCResults(
         E_mean, E_error,

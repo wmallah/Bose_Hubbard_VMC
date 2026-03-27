@@ -136,131 +136,133 @@ function local_energy_jastrow(L, sys, walker::Walker, params::JastrowParams, pha
     lattice = sys.lattice
     n = walker.n
     nq = walker.nq
-    vq = params.vq
 
     E_pot = 0.0
     log_E_kin_contributions = Float64[]
     signs = Int[]
 
+    npair = num_pair_modes(L)
+
     # -------------------------
     # Interaction energy
     # -------------------------
-    for i in 1:L
+    @inbounds for i in 1:L
         ni = n[i]
-        E_pot += (U/2) * ni * (ni - 1)
+        E_pot += (U / 2) * ni * (ni - 1)
     end
 
     # -------------------------
-    # Hopping energy
-    # -------------------------
-    # -------------------------
     # Kinetic energy
     # -------------------------
-
-    # Loop through all lattice sites
-    for i in 1:L
-        # Loop through all neighbors of each site
+    @inbounds for i in 1:L
         for j in lattice.neighbors[i]
 
-            # Ensure we don't double count
+            # avoid double counting bonds
             if j > i
 
                 # -------------------------
-                # hop j → i
+                # hop j -> i
                 # -------------------------
-
                 if n[j] > 0
-
-                    Δnq = similar(nq)
-
                     Δnq = similar(nq)
 
                     for k in eachindex(nq)
-                        Δnq[k] = phase[k,i] - phase[k,j]
+                        Δnq[k] = phase[k, i] - phase[k, j]
                     end
 
                     log_R = 0.0
 
-                    for m in 1:(L÷2)
-
+                    # paired modes: q = 2πm/L, m = 1, ..., floor((L-1)/2)
+                    for m in 1:npair
                         k = m + 1
-
                         old = abs2(nq[k])
                         new = abs2(nq[k] + Δnq[k])
-
-                        log_R += vq[m] * (new - old)
-
+                        log_R -= params.vpair[m] * (new - old) / L
                     end
 
-                    log_R *= -(1/(2L))
+                    # edge/Nyquist mode only for even L
+                    if has_edge_mode(L)
+                        kedge = edge_mode_index(L)
+                        old = abs2(nq[kedge])
+                        new = abs2(nq[kedge] + Δnq[kedge])
+                        log_R -= something(params.vedge, 0.0) * (new - old) / (2L)
+                    end
 
-                    log_E_kin =
-                        0.5 * log((n[i] + 1) * n[j]) + log_R
+                    log_E_kin = 0.5 * log((n[i] + 1) * n[j]) + log_R
 
                     push!(log_E_kin_contributions, log_E_kin)
                     push!(signs, -1)
-
                 end
 
-
                 # -------------------------
-                # hop i → j
+                # hop i -> j
                 # -------------------------
-
                 if n[i] > 0
-
                     Δnq = similar(nq)
 
                     for k in eachindex(nq)
-                        Δnq[k] = phase[k,j] - phase[k,i]
+                        Δnq[k] = phase[k, j] - phase[k, i]
                     end
 
                     log_R = 0.0
 
-                    for m in 1:(L÷2)
-
+                    # paired modes
+                    for m in 1:npair
                         k = m + 1
-
                         old = abs2(nq[k])
                         new = abs2(nq[k] + Δnq[k])
-
-                        log_R += vq[m] * (new - old)
-
+                        log_R -= params.vpair[m] * (new - old) / L
                     end
 
-                    log_R *= -(1/(2L))
+                    # edge/Nyquist mode
+                    if has_edge_mode(L)
+                        kedge = edge_mode_index(L)
+                        old = abs2(nq[kedge])
+                        new = abs2(nq[kedge] + Δnq[kedge])
+                        log_R -= something(params.vedge, 0.0) * (new - old) / (2L)
+                    end
 
-                    log_E_kin =
-                        0.5 * log((n[j] + 1) * n[i]) + log_R
+                    log_E_kin = 0.5 * log((n[j] + 1) * n[i]) + log_R
 
                     push!(log_E_kin_contributions, log_E_kin)
                     push!(signs, -1)
-
                 end
-
             end
         end
     end
 
-    log_abs_E, sign_E = signed_logsumexp(log_E_kin_contributions, signs)
+    if isempty(log_E_kin_contributions)
+        E_kin = 0.0
+    else
+        log_abs_E, sign_E = signed_logsumexp(log_E_kin_contributions, signs)
+        E_kin = sign_E * t * exp(log_abs_E)
+    end
 
+    log_abs_E, sign_E = signed_logsumexp(log_E_kin_contributions, signs)
     E_kin = sign_E * t * exp(log_abs_E)
 
     return E_kin + E_pot, E_kin, E_pot
 end
 
 
-function logpsi_derivatives(nq::Vector{ComplexF64}, L::Int)
+function logpsi_derivatives(nq, L)
+    npair = num_pair_modes(L)
+    has_edge = has_edge_mode(L)
 
-    M = L ÷ 2
+    Nv = npair + (has_edge ? 1 : 0)
+    O = zeros(Float64, Nv)
 
-    O = zeros(Float64, M)
-
-    for m in 1:M
+    # Paired modes
+    @inbounds for m in 1:npair
         k = m + 1
-        O[m] = -(1/(2L)) * abs2(nq[k])
+        O[m] = -abs2(nq[k]) / L
+    end
+
+    # Edge mode
+    if has_edge
+        kedge = edge_mode_index(L)
+        O[npair + 1] = -abs2(nq[kedge]) / (2L)
     end
 
     return O
-
 end

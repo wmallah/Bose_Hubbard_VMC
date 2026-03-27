@@ -32,11 +32,33 @@ function generate_coefficients(κ::Real, n_max::Int; logfact=LOGFACTORIAL_TABLE)
     return GutzwillerWavefunction(log_f)
 end
 
+
 struct GutzwillerWavefunction{T <: Real} <: Wavefunction
     # Vector for coefficients
     f::Vector{T}
 end
 
+
 struct JastrowParams{T <: Real} <: Wavefunction
-    vq::Vector{T}   # length = L/2
+    vpair::Vector{T}
+    vedge::Union{Nothing,T}
+end
+
+function JastrowParams(vpair::Vector{T}) where {T <: Real}
+    return JastrowParams{T}(vpair, nothing)
+end
+
+function JastrowParams(vpair::Vector{T}, vedge::T) where {T <: Real}
+    return JastrowParams{T}(vpair, vedge)
+end
+
+function init_jastrow_params(L::Int; T::Type{<:Real}=Float64)
+    npair = num_pair_modes(L)
+    vpair = zeros(T, npair)
+
+    if iseven(L)
+        return JastrowParams(vpair, zero(T))
+    else
+        return JastrowParams(vpair)
+    end
 end

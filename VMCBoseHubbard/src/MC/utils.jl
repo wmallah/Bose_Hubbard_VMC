@@ -148,44 +148,69 @@ function estimate_tau(data::Vector{Float64}; max_lag::Int=1000)
     return τ
 end
 
-function compute_logpsi(nq, params, L)
+function num_pair_modes(L::Int)
+    return (L - 1) ÷ 2
+end
 
-    vq = params.vq
+function has_edge_mode(L::Int)
+    return iseven(L)
+end
+
+function edge_mode_index(L::Int)
+    return L ÷ 2 + 1
+end
+
+function compute_logpsi(nq, params::JastrowParams, L::Int)
     logpsi = 0.0
 
-    for m in 1:(L ÷ 2)
+    npair = num_pair_modes(L)
+
+    # Paired modes: q = 2πm/L, m = 1, ..., floor((L-1)/2)
+    @inbounds for m in 1:npair
         k = m + 1
-        logpsi -= vq[m] * abs2(nq[k]) / (2L)
+        logpsi -= params.vpair[m] * abs2(nq[k]) / L
+    end
+
+    # Special edge mode only for even L
+    if has_edge_mode(L)
+        kedge = edge_mode_index(L)
+        logpsi -= something(params.vedge, 0.0) * abs2(nq[kedge]) / (2L)
     end
 
     return logpsi
 end
 
-function compute_delta_logpsi(nq, from, to, phase, params, L)
+function compute_delta_logpsi(nq, from, to, phase, params::JastrowParams, L::Int)
+    delta = 0.0
 
-    vq = params.vq
+    npair = num_pair_modes(L)
 
-    log_R = 0.0
-
-    halfL = L ÷ 2
-
-    @inbounds for m in 1:halfL
-
+    # Paired modes
+    @inbounds for m in 1:npair
         k = m + 1
-
-        Δnq = phase[k,to] - phase[k,from]
-
+        Δnq = phase[k, to] - phase[k, from]
         a = nq[k]
         b = Δnq
-
-        log_R += vq[m] * (2 * real(conj(a) * b) + abs2(b))
-
+        delta += params.vpair[m] * (2 * real(conj(a) * b) + abs2(b)) / L
     end
 
-    return -log_R / (2L)
+    # Edge mode only for even L
+    if has_edge_mode(L)
+        kedge = edge_mode_index(L)
+        Δnq = phase[kedge, to] - phase[kedge, from]
+        a = nq[kedge]
+        b = Δnq
+        delta += something(params.vedge, 0.0) *
+                 (2 * real(conj(a) * b) + abs2(b)) / (2L)
+    end
 
+    return -delta
 end
 
+function compute_q_grid(L::Int)
+    m = collect(1:num_pair_modes(L))
+    return 2π .* m ./ L
+end
 
 function build_phase_table(L)
 
