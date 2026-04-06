@@ -1,188 +1,239 @@
-using Pkg
-Pkg.activate("../")
+using LinearAlgebra
 
-include("../src/VMCBoseHubbard.jl")
-using .VMCBoseHubbard
-
+import ..VMCBoseHubbard: MC_integration_Gutzwiller
 import ..VMCBoseHubbard: MC_integration_Jastrow
-import ..VMCBoseHubbard: estimate_tau
-import ..VMCBoseHubbard: JastrowParams
+import ..VMCBoseHubbard: estimate_energy_gradient_and_metric
 
-function num_pair_modes(L::Int)
-    return (L - 1) ÷ 2
-end
+export optimize_kappa_SR, optimize_jastrow_SR
 
-function has_edge_mode(L::Int)
-    return iseven(L)
-end
+function optimize_kappa_SR(sys::System,
+                           N_target::Int,
+                           n_max::Int,
+                           grand_canonical::Bool,
+                           projective::Bool;
+                           κ_init::Float64 = 1.0,
+                           η::Float64 = 0.05,
+                           num_walkers::Int = 200,
+                           num_MC_steps::Int = 30000,
+                           num_equil_steps::Int = 5000,
+                           block_size::Int = 200,
+                           z::Float64 = 1.0)
 
-function compute_q_grid(L::Int)
-    m = collect(1:num_pair_modes(L))
-    return 2π .* m ./ L
-end
+    κ = κ_init
 
-function initialize_output_file(filepath::String, header::String)
-    if !isfile(filepath)
-        open(filepath, "w") do io
-            println(io, header)
-        end
-    end
-end
+    history = Vector{NamedTuple{(:κ,:energy,:gradient,:snr),
+               Tuple{Float64,Float64,Float64,Float64}}}()
 
-function append_energy_result(filepath::String, U, result)
-    open(filepath, "a") do io
-        println(io, "$(U) $(result.mean_energy) $(result.sem_energy)")
-    end
-end
+    λ = 1e-3
+    max_step = 0.2
 
-function append_energy_parts(filepath::String, U, result)
-    open(filepath, "a") do io
-        println(io,
-            "$(U) " *
-            "$(result.mean_kinetic) $(result.sem_kinetic) " *
-            "$(result.mean_potential) $(result.sem_potential)"
+    while true
+
+        ############################################################
+        # Monte Carlo sampling
+        ############################################################
+
+        result = MC_integration_Gutzwiller(
+            sys,
+            N_target,
+            κ,
+            n_max,
+            grand_canonical,
+            projective;
+            num_walkers=num_walkers,
+            num_MC_steps=num_MC_steps,
+            num_equil_steps=num_equil_steps,
+            block_size=block_size
         )
+
+        E   = result.mean_energy
+        err = result.sem_energy
+
+        ############################################################
+        # Gradient and metric from MC
+        ############################################################
+
+        g_vec  = result.gradient
+        SE_vec = result.gradient_standard_error
+        S_mat  = result.metric
+
+        g   = g_vec[1]
+        SEg = SE_vec[1]
+        S   = S_mat[1,1]
+
+        if !isfinite(g) || !isfinite(SEg) || !isfinite(S)
+            @warn "Stopping: non-finite values encountered"
+            break
+        end
+
+        ############################################################
+        # Signal-to-noise ratio
+        ############################################################
+
+        snr = abs(g) / SEg
+
+        println("κ = $(round(κ,digits=10))  " *
+                "E = $(round(E,digits=8)) ± $(round(err,digits=8))  " *
+                "g = $(round(g,digits=6))  " *
+                "SNR = $(round(snr,digits=4))")
+
+        push!(history,
+              (κ = κ,
+               energy = E,
+               gradient = g,
+               snr = snr))
+
+        ############################################################
+        # Statistical convergence test
+        ############################################################
+
+        if abs(g) < z * SEg
+            println("Gradient statistically zero (|g| < $(z)σ). Converged.")
+            break
+        end
+
+        ############################################################
+        # Natural gradient step (SR)
+        ############################################################
+
+        Δκ = η * g / (S + λ)
+
+        if abs(Δκ) > max_step
+            Δκ = max_step * sign(Δκ)
+        end
+
+        ############################################################
+        # Parameter update
+        ############################################################
+
+        κ -= Δκ
+        κ = clamp(κ, 1e-12, 10.0)
+
+        ############################################################
+        # Mild learning rate decay
+        ############################################################
+
+        η *= 0.998
+
     end
+
+    return κ, history
 end
 
-# -----------------------
-# System parameters
-# -----------------------
-L = 60
-N_target = 60
-t = 1.0
-n_max = N_target
 
-# Initial Jastrow parameters
-vq_init_full = [3.5024847541488278,3.383476263327771,3.229229526112806,
-2.9866547945901933,2.7684143888137296,2.545146148982976,
-2.3573277506409385,2.153722151887709,1.9946729151830116,
-1.8521619086313694,1.7242674015967503,1.6253829899508971,
-1.5339247755799204,1.458178437190528,1.392009697153715,
-1.3394279327966896,1.2911998032869836,1.253236370141688,
-1.2193395201588166,1.1877892781756658,1.1628372273725993,
-1.1388702250162521,1.1232406254805813,1.1083383005460865,
-1.095965954592878,1.0862860140717963,1.0810662181552053,
-1.0759478016266866,1.070322020907657,0.5333398152971762]
+function flatten_params(params::JastrowParams)
+    return copy(params.vr)
+end
 
-npair = num_pair_modes(L)
-vpair_init = copy(vq_init_full[1:npair])
-vedge_init = has_edge_mode(L) ? vq_init_full[npair + 1] : nothing
+function unflatten_params(v::Vector{T}, L::Int) where {T<:Real}
+    @assert length(v) == fld(L, 2)
+    return JastrowParams(copy(v))
+end
 
-# Parameter scans
-U_vals = [2.4, 2.5, 3.0, 4.0, 6.0]
-μ_vals = zeros(length(U_vals))
 
-dim = "1D"
-grand_canonical = false
-projective = false
+function optimize_jastrow_SR(sys::System,
+                             params::JastrowParams,
+                             N_target::Int,
+                             n_max::Int;
+                             η::Float64 = 0.05,
+                             num_walkers::Int = 200,
+                             num_MC_steps::Int = 30000,
+                             num_equil_steps::Int = 5000,
+                             block_size::Int = 200,
+                             z::Float64 = 1.0)
 
-lattice = Lattice1D(L)
-ensemble = !grand_canonical ? "C" : "GC"
+    history = []
 
-dir_base = "../data/$(ensemble)/$(dim)/L$(L)_N$(N_target)/jastrow"
-mkpath(dir_base)
+    λ = 1e-3
+    max_step = 0.2
 
-results_file = "$(dir_base)/VMC_results.dat"
-energy_parts_file = "$(dir_base)/VMC_energy_parts.dat"
+    L = length(sys.lattice.neighbors)
 
-initialize_output_file(results_file, "# U   energy   sem")
-initialize_output_file(energy_parts_file, "# U   E_kin   E_kin_sem   E_pot   E_pot_sem")
+    while true
 
-for (U, μ) in zip(U_vals, μ_vals)
+        ############################################################
+        # Monte Carlo sampling
+        ############################################################
 
-    println("Optimizing Jastrow parameters for U = $U, μ = $μ")
+        result = MC_integration_Jastrow(
+            sys,
+            N_target,
+            params,
+            n_max,
+            false,
+            false;
+            num_walkers = num_walkers,
+            num_MC_steps = num_MC_steps,
+            num_equil_steps = num_equil_steps,
+            block_size = block_size
+        )
 
-    sys = System(t, U, μ, lattice)
+        E = result.mean_energy
+        err = result.sem_energy
 
-    params_init = isnothing(vedge_init) ?
-        JastrowParams(copy(vpair_init)) :
-        JastrowParams(copy(vpair_init), vedge_init)
+        ############################################################
+        # Estimate gradient and SR metric
+        ############################################################
 
-    params_opt, history = optimize_jastrow_SR(
-        sys,
-        params_init,
-        N_target,
-        n_max;
-        η = 0.05,
-        num_walkers = 200,
-        num_MC_steps = 3_000,
-        num_equil_steps = 500,
-        block_size = 1_500,
-        z = 1.0
-    )
+        g = result.gradient
+        SE_g = result.gradient_standard_error
+        S = result.metric
 
-    println("    Optimal vpair = ", params_opt.vpair)
-    if !isnothing(params_opt.vedge)
-        println("    Optimal vedge = ", params_opt.vedge)
-    end
-
-    # Save paired modes only
-    vpair = params_opt.vpair
-    q = compute_q_grid(L)
-    vq_q2 = vpair .* q.^2
-
-    vq_file = "$(dir_base)/VMC_vq_vs_q_U$(U).dat"
-    open(vq_file, "w") do io
-        println(io, "# q   v_q   v_q_q2")
-        for i in eachindex(vpair)
-            println(io, "$(q[i]) $(vpair[i]) $(vq_q2[i])")
+        if any(!isfinite, g) || any(!isfinite, SE_g) || any(!isfinite, S)
+            @warn "Stopping: non-finite values encountered"
+            break
         end
-    end
-    println("Saved paired-mode v_q data to ", vq_file)
 
-    # Save edge mode separately
-    if !isnothing(params_opt.vedge)
-        vedge_file = "$(dir_base)/VMC_vedge_U$(U).dat"
-        open(vedge_file, "w") do io
-            println(io, "# q_edge   v_edge")
-            println(io, "$(π) $(params_opt.vedge)")
+        ############################################################
+        # Signal-to-noise ratios
+        ############################################################
+
+        snr = similar(g)
+        for i in eachindex(g)
+            snr[i] = SE_g[i] > 0 ? abs(g[i]) / SE_g[i] : Inf
         end
-        println("Saved edge-mode data to ", vedge_file)
-    end
 
-    # Warm start next U
-    vpair_init .= params_opt.vpair
-    if has_edge_mode(L) && !isnothing(params_opt.vedge)
-        vedge_init = params_opt.vedge
-    end
+        println("Energy = $(round(E, digits=8)) ± $(round(err, digits=8))")
+        println("Gradient norm = ", norm(g))
+        println("Max SNR = ", maximum(snr))
 
-    final_result = MC_integration_Jastrow(
-        sys,
-        N_target,
-        params_opt,
-        n_max,
-        grand_canonical,
-        projective;
-        num_walkers = 400,
-        num_MC_steps = 10_000,
-        num_equil_steps = 2_000,
-        block_size = 1_500
-    )
+        push!(history,
+              (params = flatten_params(params),
+               energy = E,
+               gradient = copy(g),
+               snr = copy(snr)))
 
-    acceptance_ratio = final_result.acceptance_ratio
-    println("Acceptance Ratio: $acceptance_ratio")
+        ############################################################
+        # Statistical convergence test
+        ############################################################
 
-    energies = final_result.energies
-    τE = estimate_tau(energies)
-
-    println("Estimated autocorrelation time τ = ", τE)
-    println("Effective sample size ≈ ", length(energies) / (2τE))
-
-    if grand_canonical
-        hist_file = "$(dir_base)/PN_hist_U$(U).dat"
-        open(hist_file, "w") do io
-            println(io, "# N   count")
-            for (i, count) in enumerate(final_result.PN)
-                if count > 0
-                    println(io, "$(i - 1) $count")
-                end
-            end
+        if all(abs.(g) .< z .* SE_g)
+            println("All gradient components statistically zero. Converged.")
+            break
         end
+
+        ############################################################
+        # Natural gradient step (SR)
+        ############################################################
+
+        Δv = η * ((S + λ * I) \ g)
+
+        step_norm = norm(Δv)
+        if step_norm > max_step
+            Δv *= max_step / step_norm
+        end
+
+        ############################################################
+        # Parameter update
+        ############################################################
+
+        v_old = flatten_params(params)
+        v_new = v_old .- Δv
+        params = unflatten_params(v_new, L)
+
+        η *= 0.998
+
     end
 
-    append_energy_result(results_file, U, final_result)
-    append_energy_parts(energy_parts_file, U, final_result)
-
-    println("Saved completed results for U = $U")
+    return params, history
 end
