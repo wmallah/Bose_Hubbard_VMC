@@ -24,9 +24,8 @@ function optimize_kappa_SR(sys::System,
     history = Vector{NamedTuple{(:κ,:energy,:gradient,:snr),
                Tuple{Float64,Float64,Float64,Float64}}}()
 
-    λ = 1e-6
+    λ = 1e-3
     max_step = 0.2
-    iter = 0
 
     while true
 
@@ -114,12 +113,21 @@ function optimize_kappa_SR(sys::System,
         # Mild learning rate decay
         ############################################################
 
-        iter += 1
         η *= 0.998
 
     end
 
     return κ, history
+end
+
+
+function flatten_params(params::JastrowParams)
+    return copy(params.vr)
+end
+
+function unflatten_params(v::Vector{T}, L::Int) where {T<:Real}
+    @assert length(v) == fld(L, 2)
+    return JastrowParams(copy(v))
 end
 
 
@@ -136,9 +144,10 @@ function optimize_jastrow_SR(sys::System,
 
     history = []
 
-    λ = 1e-6
+    λ = 1e-3
     max_step = 0.2
-    iter = 0
+
+    L = length(sys.lattice.neighbors)
 
     while true
 
@@ -153,10 +162,10 @@ function optimize_jastrow_SR(sys::System,
             n_max,
             false,
             false;
-            num_walkers=num_walkers,
-            num_MC_steps=num_MC_steps,
-            num_equil_steps=num_equil_steps,
-            block_size=block_size
+            num_walkers = num_walkers,
+            num_MC_steps = num_MC_steps,
+            num_equil_steps = num_equil_steps,
+            block_size = block_size
         )
 
         E = result.mean_energy
@@ -179,14 +188,17 @@ function optimize_jastrow_SR(sys::System,
         # Signal-to-noise ratios
         ############################################################
 
-        snr = abs.(g) ./ SE_g
+        snr = similar(g)
+        for i in eachindex(g)
+            snr[i] = SE_g[i] > 0 ? abs(g[i]) / SE_g[i] : Inf
+        end
 
-        println("Energy = $(round(E,digits=8)) ± $(round(err,digits=8))")
+        println("Energy = $(round(E, digits=8)) ± $(round(err, digits=8))")
         println("Gradient norm = ", norm(g))
         println("Max SNR = ", maximum(snr))
 
         push!(history,
-              (params = copy(params.vq),
+              (params = flatten_params(params),
                energy = E,
                gradient = copy(g),
                snr = copy(snr)))
@@ -206,7 +218,6 @@ function optimize_jastrow_SR(sys::System,
 
         Δv = η * ((S + λ * I) \ g)
 
-        # step limiter
         step_norm = norm(Δv)
         if step_norm > max_step
             Δv *= max_step / step_norm
@@ -216,11 +227,11 @@ function optimize_jastrow_SR(sys::System,
         # Parameter update
         ############################################################
 
-        params.vq .-= Δv
+        v_old = flatten_params(params)
+        v_new = v_old .- Δv
+        params = unflatten_params(v_new, L)
 
-        # Subtle adaptive learning rate update for faster convergence (avoids jumping over minimum)
-        iter += 1
-        η = η * 0.998^iter
+        η *= 0.998
 
     end
 

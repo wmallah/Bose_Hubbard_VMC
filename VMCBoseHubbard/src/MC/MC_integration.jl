@@ -151,7 +151,7 @@ function MC_integration_Gutzwiller(sys::System,
             if from != to
 
                 # compute ratio using current configuration
-                ratio = acceptance_probability(n, from, to, wf)
+                ratio = acceptance_probability_Gutzwiller(n, from, to, wf)
 
                 if isfinite(ratio) && rand() < ratio
 
@@ -276,33 +276,29 @@ end
 
 #=
 Purpose: store all information for our walkers
-Input: n (walker/system configuration in real space), nq (walker/system configuration in momentum space), logpsi (log of our wavefunction)
+Input: n (walker/system configuration in real space),
+       logpsi (cached log of Jastrow part of wavefunction),
+       N (total particle number)
 Author: Will Mallah
-Last Updated: 03/04/2026
+Last Updated: 04/03/2026
 =#
 mutable struct Walker
-    n::Vector{Int}               # real-space occupations
-    nq::Vector{ComplexF64}       # Fourier density modes
-    logpsi::Float64              # cached log wavefunction
-    N::Int64                     # total particle number
+    n::Vector{Int}
+    logpsi::Float64
+    N::Int
 end
 
 
-
 #=
-Purpose: initialize the walkers, which now contain n (walker/system configuration in real space), nq (walker/system configuration in momentum space), logpsi (log of our wavefunction)
-Input: n (walker/system configuration in real sapce), params (set of Jastrow coefficients), L (system size)
+Purpose: initialize a walker in real space
+Input: n (walker/system configuration in real space),
+       params (real-space Jastrow coefficients)
 Output: Walker struct
-Last Updated: 03/05/2026
+Last Updated: 04/03/2026
 =#
-function initialize_walker(n::Vector{Int}, params::JastrowParams, L::Int, N)
-
-    nq = fft(Float64.(n))
-
-    logpsi = compute_logpsi(nq, params, L)
-
-    return Walker(copy(n), nq, logpsi, N)
-
+function initialize_walker(n::Vector{Int}, params::JastrowParams)
+    logpsi = compute_logpsi_realspace(n, params)
+    return Walker(copy(n), logpsi, sum(n))
 end
 
 
@@ -317,27 +313,21 @@ function MC_integration_Jastrow(sys::System,
                                 num_equil_steps::Int = 5000,
                                 block_size::Int = 200)
 
-    # Select wether system is canonical or grand canonical according to the grand_canonical boolean variable (false for canonical, true for grand canonical)
     ensemble = !grand_canonical ? "Canonical" : "Grand Canonical"
 
-    # Determine the lattice size from the length of the lattice neighbors generated in the sys struct
     L = length(sys.lattice.neighbors)
-    # Retrieve the value for the chemcial potential from the sys struct
-    μ = sys.μ
+    μ = sys.μ  # kept in case you use it later for grand canonical or projected logic
 
     ############################################################
     # Ground-state-like walker generator
     ############################################################
 
-    # Intialize the system configurations/walkers as true unit filling plus remainder
     function ground_state_like_configuration()
-
         if N_target > L * n_max
             error("Impossible: N > L * n_max")
         end
 
         n = fill(div(N_target, L), L)
-
         remainder = N_target % L
 
         for i in 1:remainder
@@ -345,25 +335,23 @@ function MC_integration_Jastrow(sys::System,
         end
 
         return n
-
     end
 
     ############################################################
     # Initialize walkers
     ############################################################
 
-    walkers = [initialize_walker(ground_state_like_configuration(), params, L, N_target)
+    walkers = [initialize_walker(ground_state_like_configuration(), params)
                for _ in 1:num_walkers]
 
     ############################################################
     # Measurement storage
     ############################################################
 
-    # For histograming total particle number in grand canonical
-    PN = zeros(Int, L * n_max)
+    # Histogram total particle number
+    PN = zeros(Int, L * n_max + 1)
 
-    # Blocking sums and vector initialization
-    num_blocks = 0
+    # Block accumulators
     block_sum_E = 0.0
     block_sum_T = 0.0
     block_sum_V = 0.0
@@ -374,8 +362,8 @@ function MC_integration_Jastrow(sys::System,
     block_means_V = Float64[]
     total_N = Float64[]
 
-    # Store for gradient and gradient error calculations
-    Nv = length(params.vq)
+    # Gradient / SR storage
+    Nv = length(params.vr)
 
     sum_O = zeros(Float64, Nv)
     sum_OO = zeros(Float64, Nv, Nv)
@@ -385,163 +373,107 @@ function MC_integration_Jastrow(sys::System,
     block_gradients = Vector{Vector{Float64}}()
 
     num_samples = 0
-    
+    num_completed_blocks = 0
+
     num_accepted_moves = 0
     num_failed_moves = 0
-
-    ############################################################
-    # Precompute Fourier phase factors
-    ############################################################
-
-    # [HAVE OUTDATED FUNCTION FOR THIS IN "utils.jl"]
-
-    # Generate possible momentum values
-    qvals = [2π*(k-1)/L for k in 1:L]
-
-    # Initialize phase matrix
-    phase = Matrix{ComplexF64}(undef, L, L)
-
-    # Fill phase matrix
-    for k in 1:L
-        for r in 1:L
-            phase[k,r] = exp(-im * qvals[k] * (r-1))
-        end
-    end
 
     ############################################################
     # Monte Carlo loop
     ############################################################
 
     @showprogress enabled=true "Running " * ensemble * " VMC..." for step in 1:num_MC_steps
-        # Loop through system configurations/walkers to update
         for w in walkers
-            # Temporary variable to hold current walker
             n = w.n
-            # Temporary variable to hold Fourier configuration modes
-            nq = w.nq
 
             ####################################################
             # Move proposal
             ####################################################
 
             if grand_canonical
-                error("Grand canonical moves not implemented yet")
-                # Select random site in the lattice
-                site = rand(1:L)
-
-                # Add or remove a particle on random site with 50/50 probability (add/remove, respectively)
-                if rand() < 0.5
-                    n[site] += 1
-                else
-                    n[site] -= 1
-                end
-
-                # Expensive to sum walker/configuration every time. Change w.N in walker struct instead after move proposal [FIX FOR GRAND CANONICAL]
-                N_now = sum(n)
+                error("Grand canonical moves not implemented yet for the real-space Jastrow branch.")
             else
-                # Select random site to be source of move
+                # choose source site with at least one boson
                 from = rand(1:L)
                 while n[from] == 0
                     from = rand(1:L)
                 end
 
-                # Select random neighbor (target site) of that previously chosen random site
+                # choose neighboring target not already at n_max
                 to = rand(sys.lattice.neighbors[from])
                 while n[to] == n_max
                     to = rand(sys.lattice.neighbors[from])
                 end
 
-                # If the source and target sites aren't the same site (they shouldn't be from how the neighbor matrix is generated), attempt to move a single particle
-                if from != to
+                # compute acceptance from the ORIGINAL configuration
+                Δlogpsi = compute_delta_logpsi_realspace(n, from, to, params)
+                log_ratio = 2.0 * Δlogpsi + log(n[from]) - log(n[to] + 1)
+
+                if isfinite(log_ratio) && (log_ratio >= 0.0 || log(rand()) < log_ratio)
                     n[from] -= 1
-                    n[to] += 1
+                    n[to]   += 1
+
+                    w.logpsi += Δlogpsi
+                    w.N = N_target
+
+                    num_accepted_moves += 1
+                else
+                    num_failed_moves += 1
                 end
 
-                # Total particle number should not change in canonical ensemble
                 N_now = N_target
-            end
-
-            ####################################################
-            # Compute Δlogψ
-            ####################################################
-
-            Δlogψ = compute_delta_logpsi(nq, from, to, phase, params, L)
-
-            log_ratio = 2 * Δlogψ
-
-            ####################################################
-            # Metropolis step
-            ####################################################
-
-            if isfinite(log_ratio) && log(rand()) < log_ratio
-                # Update Fourier components and logpsi if move accepted
-                @inbounds for k in eachindex(nq)
-                    nq[k] += phase[k,to] - phase[k,from]
-                end
-                w.logpsi += Δlogψ
-
-                num_accepted_moves += 1
-            else
-                # Return to originial walker/configuration if move not accepted
-                n[from] += 1
-                n[to]   -= 1
-                num_failed_moves += 1
             end
 
             ####################################################
             # Measurements
             ####################################################
 
-            # Histogram total number of particles
             if N_now + 1 <= length(PN)
                 PN[N_now + 1] += 1
             end
 
-            # Only make measurements after equilibration
             if step >= num_equil_steps
-
                 if !projective || (projective && N_now == N_target)
 
-                    E, T, V = local_energy_jastrow(L, sys, w, params, phase)
+                    E, T, V = local_energy_jastrow(w.n, sys, params)
 
                     if isfinite(E)
                         block_sum_E += E
                         block_sum_T += T
                         block_sum_V += V
                         block_count += 1
-                        O = logpsi_derivatives(w.nq, L)
 
-                        g_sample = 2 .* (E .* O)
-                        block_sum_g .+= g_sample
+                        O = logpsi_derivatives_realspace(w.n)
 
+                        # Store sample accumulators for gradient / SR
                         sum_O  .+= O
                         sum_OO .+= O * O'
                         sum_EO .+= E .* O
                         push!(total_N, N_now)
 
-                        # Once the block counts reach the block size, push to respective vectors and reset sums/count
+                        # block gradient estimate
+                        g_sample = 2.0 .* (E .* O)
+                        block_sum_g .+= g_sample
+
+                        num_samples += 1
+
                         if block_count == block_size
                             push!(block_means_E, block_sum_E / block_size)
                             push!(block_means_T, block_sum_T / block_size)
                             push!(block_means_V, block_sum_V / block_size)
                             push!(block_gradients, block_sum_g ./ block_size)
 
-
                             block_sum_E = 0.0
                             block_sum_T = 0.0
                             block_sum_V = 0.0
                             block_sum_g .= 0.0
-
                             block_count = 0
+
+                            num_completed_blocks += 1
                         end
-
-                        # Count the number of samples taken/blocks for average calculations
-                        num_blocks += 1
                     end
-
                 end
             end
-
         end
     end
 
@@ -549,41 +481,54 @@ function MC_integration_Jastrow(sys::System,
     # Final statistics
     ############################################################
 
-    # Compute acceptance ratio
-    acceptance_ratio = num_accepted_moves / (num_accepted_moves + num_failed_moves)
+    total_attempts = num_accepted_moves + num_failed_moves
+    acceptance_ratio = total_attempts > 0 ? num_accepted_moves / total_attempts : 0.0
 
-    # If no energy measurements were taken, warn and return infinity/empty vectors
     if isempty(block_means_E)
-
         @warn "No valid energy samples collected!"
 
-        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf,
-                          Float64, Float64[], Float64[],
-                          Inf, Inf, Float64[],
-                          num_failed_moves, Int[])
-
+        return VMCResults(
+            Inf, Inf,
+            Inf, Inf,
+            Inf, Inf,
+            Float64[], Float64[], zeros(Float64, 0, 0),
+            num_samples,
+            acceptance_ratio,
+            Float64[],
+            num_failed_moves,
+            Int[]
+        )
     end
 
-    # Block means
     E_mean = mean(block_means_E)
-    E_error = std(block_means_E) / sqrt(num_blocks)
-    O_mean  = sum_O  ./ num_blocks
-    OO_mean = sum_OO ./ num_blocks
-    EO_mean = sum_EO ./ num_blocks
+    E_error = std(block_means_E) / sqrt(length(block_means_E))
 
-    # Gradient and metric from block means
-    g = 2 .* (EO_mean .- E_mean .* O_mean)
+    T_mean = mean(block_means_T)
+    T_error = std(block_means_T) / sqrt(length(block_means_T))
+
+    V_mean = mean(block_means_V)
+    V_error = std(block_means_V) / sqrt(length(block_means_V))
+
+    # Use num_samples here, not number of completed blocks
+    O_mean  = sum_O  ./ num_samples
+    OO_mean = sum_OO ./ num_samples
+    EO_mean = sum_EO ./ num_samples
+
+    g = 2.0 .* (EO_mean .- E_mean .* O_mean)
     S = OO_mean .- O_mean * O_mean'
 
-    # Standard error of the gradient
-    g_blocks = hcat(block_gradients...)'
-    g_blocks .-= mean(g_blocks, dims=1)
-    SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(size(g_blocks,1))
+    if isempty(block_gradients)
+        SE_g = fill(Inf, Nv)
+    else
+        g_blocks = hcat(block_gradients...)'
+        g_blocks .-= mean(g_blocks, dims=1)
+        SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(size(g_blocks, 1))
+    end
 
     return VMCResults(
         E_mean, E_error,
-        mean(block_means_T), std(block_means_T) / sqrt(length(block_means_T)),
-        mean(block_means_V), std(block_means_V) / sqrt(length(block_means_V)),
+        T_mean, T_error,
+        V_mean, V_error,
         g, SE_g, S,
         num_samples,
         acceptance_ratio,
@@ -591,5 +536,4 @@ function MC_integration_Jastrow(sys::System,
         num_failed_moves,
         PN
     )
-
 end

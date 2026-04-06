@@ -38,5 +38,6 @@ struct GutzwillerWavefunction{T <: Real} <: Wavefunction
 end
 
 struct JastrowParams{T <: Real} <: Wavefunction
-    vq::Vector{T}   # length = L/2
+  # Vector for real space coefficients
+  vr::Vector{T}      # L/2 distinct coefficients because of translational invariance
 end

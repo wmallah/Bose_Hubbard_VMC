@@ -23,7 +23,7 @@ Output: sampling ratio between two system states
 Author: Will Mallah
 Last Updated: 02/12/26
 =#
-function acceptance_probability(n::Vector{Int},
+function acceptance_probability_Gutzwiller(n::Vector{Int},
                                 from::Int,
                                 to::Int,
                                 ψ::Wavefunction)
@@ -33,4 +33,20 @@ function acceptance_probability(n::Vector{Int},
         2 * (ψ.f[n[to] + 2]   - ψ.f[n[to] + 1])
 
     return log_ratio ≥ 0 ? 1.0 : exp(log_ratio)
+end
+
+function acceptance_probability_realspace_jastrow(
+    n::Vector{Int},
+    from_site::Int,
+    to_site::Int,
+    ψ::Wavefunction
+)
+    if n[from_site] == 0
+        return 0.0
+    end
+
+    Δlogpsi = compute_delta_logpsi_realspace(n, from_site, to_site, ψ)
+    log_ratio = 2.0 * Δlogpsi + log(n[from_site]) - log(n[to_site] + 1)
+
+    return log_ratio >= 0.0 ? 1.0 : exp(log_ratio)
 end

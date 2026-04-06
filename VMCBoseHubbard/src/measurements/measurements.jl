@@ -131,136 +131,168 @@ function estimate_energy_gradient_and_metric(result::VMCResults;
 end
 
 
-function local_energy_jastrow(L, sys, walker::Walker, params::JastrowParams, phase)
-    t, U = sys.t, sys.U
-    lattice = sys.lattice
-    n = walker.n
-    nq = walker.nq
-    vq = params.vq
-
-    E_pot = 0.0
-    log_E_kin_contributions = Float64[]
-    signs = Int[]
-
-    # -------------------------
-    # Interaction energy
-    # -------------------------
-    for i in 1:L
-        ni = n[i]
-        E_pot += (U/2) * ni * (ni - 1)
+function local_potential_energy(n::Vector{Int}, U::Float64)
+    Epot = 0.0
+    for ni in n
+        Epot += 0.5 * U * ni * (ni - 1)
     end
+    return Epot
+end
 
-    # -------------------------
-    # Hopping energy
-    # -------------------------
-    # -------------------------
-    # Kinetic energy
-    # -------------------------
+function local_kinetic_energy_jastrow(
+    n::Vector{Int},
+    t::Float64,
+    ψ::Wavefunction
+)
+    L = length(n)
+    Ekin = 0.0
 
-    # Loop through all lattice sites
     for i in 1:L
-        # Loop through all neighbors of each site
-        for j in lattice.neighbors[i]
+        j = mod1(i + 1, L)   # nearest neighbor bond (i, j)
 
-            # Ensure we don't double count
-            if j > i
+        # hop j -> i  gives a_i^† a_j
+        if n[j] > 0
+            Δlogpsi = compute_delta_logpsi_realspace(n, j, i, ψ)
+            Ekin -= t * n[j] * exp(Δlogpsi)
+        end
 
-                # -------------------------
-                # hop j → i
-                # -------------------------
-
-                if n[j] > 0
-
-                    Δnq = similar(nq)
-
-                    Δnq = similar(nq)
-
-                    for k in eachindex(nq)
-                        Δnq[k] = phase[k,i] - phase[k,j]
-                    end
-
-                    log_R = 0.0
-
-                    for m in 1:(L÷2)
-
-                        k = m + 1
-
-                        old = abs2(nq[k])
-                        new = abs2(nq[k] + Δnq[k])
-
-                        log_R += vq[m] * (new - old)
-
-                    end
-
-                    log_R *= -(1/(2L))
-
-                    log_E_kin =
-                        0.5 * log((n[i] + 1) * n[j]) + log_R
-
-                    push!(log_E_kin_contributions, log_E_kin)
-                    push!(signs, -1)
-
-                end
-
-
-                # -------------------------
-                # hop i → j
-                # -------------------------
-
-                if n[i] > 0
-
-                    Δnq = similar(nq)
-
-                    for k in eachindex(nq)
-                        Δnq[k] = phase[k,j] - phase[k,i]
-                    end
-
-                    log_R = 0.0
-
-                    for m in 1:(L÷2)
-
-                        k = m + 1
-
-                        old = abs2(nq[k])
-                        new = abs2(nq[k] + Δnq[k])
-
-                        log_R += vq[m] * (new - old)
-
-                    end
-
-                    log_R *= -(1/(2L))
-
-                    log_E_kin =
-                        0.5 * log((n[j] + 1) * n[i]) + log_R
-
-                    push!(log_E_kin_contributions, log_E_kin)
-                    push!(signs, -1)
-
-                end
-
-            end
+        # hop i -> j  gives a_j^† a_i
+        if n[i] > 0
+            Δlogpsi = compute_delta_logpsi_realspace(n, i, j, ψ)
+            Ekin -= t * n[i] * exp(Δlogpsi)
         end
     end
 
-    log_abs_E, sign_E = signed_logsumexp(log_E_kin_contributions, signs)
-
-    E_kin = sign_E * t * exp(log_abs_E)
-
-    return E_kin + E_pot, E_kin, E_pot
+    return Ekin
 end
 
+function local_energy_jastrow(
+    n::Vector{Int},
+    sys::System,
+    ψ::Wavefunction
+)
+    t, U, μ = sys.t, sys.U, sys.μ
 
-function logpsi_derivatives(nq::Vector{ComplexF64}, L::Int)
+    Epot = local_potential_energy(n, U)
+    Ekin = local_kinetic_energy_jastrow(n, t, ψ)
+    return Ekin + Epot, Ekin, Epot
+end
 
-    M = L ÷ 2
+function logpsi_derivatives_realspace(n::Vector{Int})
+    L = length(n)
+    Rmax = fld(L, 2)
+    O = zeros(Float64, Rmax)
 
-    O = zeros(Float64, M)
+    for r in 1:Rmax
+        factor = 1.0
+        if iseven(L) && r == Rmax
+            factor = 0.5
+        end
 
-    for m in 1:M
-        k = m + 1
-        O[m] = -(1/(2L)) * abs2(nq[k])
+        Sr = 0.0
+        for i in 1:L
+            j = mod1(i + r, L)
+            Sr += n[i] * n[j]
+        end
+
+        O[r] = -factor * Sr
     end
 
     return O
+end
 
+
+function compute_logpsi_realspace(n::Vector{Int}, ψ::Wavefunction)
+    vr = ψ.vr
+    L = length(n)
+    Rmax = fld(L, 2)
+
+    @assert length(vr) == Rmax
+
+    logpsi = 0.0
+
+    for r in 1:Rmax
+        weight = vr[r]
+        if iseven(L) && r == Rmax
+            weight *= 0.5
+        end
+
+        Sr = 0.0
+        for i in 1:L
+            j = mod1(i + r, L)
+            Sr += n[i] * n[j]
+        end
+
+        logpsi -= weight * Sr
+    end
+
+    return logpsi
+end
+
+
+function compute_delta_logpsi_realspace(
+    n::Vector{Int},
+    from_site::Int,
+    to_site::Int,
+    ψ::Wavefunction
+)
+    # Extract Jastrow potentials
+    vr = ψ.vr
+    # Extract size of the system from walker
+    L = length(n)
+    # Determine the largest separation between sites for periodic boundary conditions
+    Rmax = fld(L, 2)
+
+    # Assert these physical quantities to ensure correct physics
+    @assert length(vr) == Rmax
+    @assert 1 <= from_site <= L
+    @assert 1 <= to_site <= L
+    @assert n[from_site] > 0
+
+    # Short-hand 'a' for source site and 'b' for target site
+    a = from_site
+    b = to_site
+
+    # Initialize Δlogpsi
+    Δlogpsi = 0.0
+
+    # Loop through all the distances between sites
+    for r in 1:Rmax
+        # The weight is determined by the Jastrow potentials
+        weight = vr[r]
+        # If L is even, we double count the Rmax = L/2 site. Divide the weight by 2
+        if iseven(L) && r == Rmax
+            weight *= 0.5
+        end
+
+        # Only these i values can change terms in S_r = sum_i n[i] * n[i+r]
+        affected_i = unique((
+            a,
+            b,
+            mod1(a - r, L),
+            mod1(b - r, L),
+        ))
+
+        old_local = 0.0
+        new_local = 0.0
+
+        for i in affected_i
+            # Remainder to ensure modulo L
+            j = mod1(i + r, L)
+
+            ni_old = n[i]
+            nj_old = n[j]
+
+            ni_new = ni_old + (i == b ? 1 : 0) - (i == a ? 1 : 0)
+            nj_new = nj_old + (j == b ? 1 : 0) - (j == a ? 1 : 0)
+
+            old_local += ni_old * nj_old
+            new_local += ni_new * nj_new
+        end
+
+        ΔSr = new_local - old_local
+        Δlogpsi -= weight * ΔSr
+    end
+
+    return Δlogpsi
 end
