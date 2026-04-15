@@ -130,7 +130,6 @@ function estimate_energy_gradient_and_metric(result::VMCResults;
     return g, SE_g, S
 end
 
-
 function local_potential_energy(n::Vector{Int}, U::Float64)
     Epot = 0.0
     for ni in n
@@ -138,6 +137,7 @@ function local_potential_energy(n::Vector{Int}, U::Float64)
     end
     return Epot
 end
+
 
 function local_kinetic_energy_jastrow(
     n::Vector{Int},
@@ -148,54 +148,58 @@ function local_kinetic_energy_jastrow(
     Ekin = 0.0
 
     for i in 1:L
-        j = mod1(i + 1, L)   # nearest neighbor bond (i, j)
+        j = mod1(i + 1, L)
 
-        # hop j -> i  gives a_i^† a_j
+        # hop j -> i gives a_i^† a_j
         if n[j] > 0
             Δlogpsi = compute_delta_logpsi_realspace(n, j, i, ψ)
-            Ekin -= t * n[j] * exp(Δlogpsi)
+            Ekin -= t * sqrt((n[i] + 1) * n[j]) * exp(Δlogpsi)
         end
 
-        # hop i -> j  gives a_j^† a_i
+        # hop i -> j gives a_j^† a_i
         if n[i] > 0
             Δlogpsi = compute_delta_logpsi_realspace(n, i, j, ψ)
-            Ekin -= t * n[i] * exp(Δlogpsi)
+            Ekin -= t * sqrt((n[j] + 1) * n[i]) * exp(Δlogpsi)
         end
     end
 
     return Ekin
 end
 
+
 function local_energy_jastrow(
     n::Vector{Int},
     sys::System,
     ψ::Wavefunction
 )
-    t, U, μ = sys.t, sys.U, sys.μ
+    t, U = sys.t, sys.U
 
     Epot = local_potential_energy(n, U)
     Ekin = local_kinetic_energy_jastrow(n, t, ψ)
     return Ekin + Epot, Ekin, Epot
 end
 
+
 function logpsi_derivatives_realspace(n::Vector{Int})
     L = length(n)
     Rmax = fld(L, 2)
-    O = zeros(Float64, Rmax)
+    O = zeros(Float64, Rmax + 1)
 
-    for r in 1:Rmax
+    for idx in 1:(Rmax + 1)
+        R = idx - 1
+
         factor = 1.0
-        if iseven(L) && r == Rmax
+        if iseven(L) && R == Rmax
             factor = 0.5
         end
 
-        Sr = 0.0
+        SR = 0.0
         for i in 1:L
-            j = mod1(i + r, L)
-            Sr += n[i] * n[j]
+            j = mod1(i + R, L)
+            SR += n[i] * n[j]
         end
 
-        O[r] = -factor * Sr
+        O[idx] = -factor * SR
     end
 
     return O
@@ -207,23 +211,25 @@ function compute_logpsi_realspace(n::Vector{Int}, ψ::Wavefunction)
     L = length(n)
     Rmax = fld(L, 2)
 
-    @assert length(vr) == Rmax
+    @assert length(vr) == Rmax + 1
 
     logpsi = 0.0
 
-    for r in 1:Rmax
-        weight = vr[r]
-        if iseven(L) && r == Rmax
+    for idx in 1:(Rmax + 1)
+        R = idx - 1
+
+        weight = vr[idx]
+        if iseven(L) && R == Rmax
             weight *= 0.5
         end
 
-        Sr = 0.0
+        SR = 0.0
         for i in 1:L
-            j = mod1(i + r, L)
-            Sr += n[i] * n[j]
+            j = mod1(i + R, L)
+            SR += n[i] * n[j]
         end
 
-        logpsi -= weight * Sr
+        logpsi -= weight * SR
     end
 
     return logpsi
@@ -236,62 +242,71 @@ function compute_delta_logpsi_realspace(
     to_site::Int,
     ψ::Wavefunction
 )
-    # Extract Jastrow potentials
+    # Extract Jastrow potentials from wavefunction struct
     vr = ψ.vr
-    # Extract size of the system from walker
+    # Extract the system size from the length of the configuration vector
     L = length(n)
-    # Determine the largest separation between sites for periodic boundary conditions
+    # Define the maximum difference between two sites on our 1D periodic lattice
     Rmax = fld(L, 2)
 
-    # Assert these physical quantities to ensure correct physics
-    @assert length(vr) == Rmax
+    # Assert quantities to ensure physical laws
+    @assert length(vr) == Rmax + 1
     @assert 1 <= from_site <= L
     @assert 1 <= to_site <= L
     @assert n[from_site] > 0
 
-    # Short-hand 'a' for source site and 'b' for target site
+    # Short-hand notation
     a = from_site
     b = to_site
 
-    # Initialize Δlogpsi
+    # Initialize the quantitiy we want to compute
     Δlogpsi = 0.0
 
-    # Loop through all the distances between sites
-    for r in 1:Rmax
-        # The weight is determined by the Jastrow potentials
-        weight = vr[r]
-        # If L is even, we double count the Rmax = L/2 site. Divide the weight by 2
-        if iseven(L) && r == Rmax
+    # Sum over site distances using Julia indexing (idx = 1 --> R = 0, idx = Rmax + 1 --> R = Rmax)
+    for idx in 1:(Rmax + 1)
+        R = idx - 1
+
+        # The "weights" in the sum we are computing are the Jastrow potentials
+        weight = vr[idx]
+        
+        # Need to multiply by 0.5 to avoid double-counting at R = Rmax when the number of sites is even
+        if iseven(L) && R == Rmax
             weight *= 0.5
         end
 
-        # Only these i values can change terms in S_r = sum_i n[i] * n[i+r]
+        # 
         affected_i = unique((
             a,
             b,
-            mod1(a - r, L),
-            mod1(b - r, L),
+            mod1(a - R, L),
+            mod1(b - R, L),
         ))
 
+        # Initialize old and new operator values
         old_local = 0.0
         new_local = 0.0
 
+        # Only sum over sites which are affected by the hopping move (won't cancel exactly in the sum)
         for i in affected_i
-            # Remainder to ensure modulo L
-            j = mod1(i + r, L)
+            # Distance from i site
+            j = mod1(i + R, L)
 
+            # Asssign old operator values
             ni_old = n[i]
             nj_old = n[j]
 
+            # Assign new operators from hopping move
             ni_new = ni_old + (i == b ? 1 : 0) - (i == a ? 1 : 0)
             nj_new = nj_old + (j == b ? 1 : 0) - (j == a ? 1 : 0)
 
+            # Sum non-cancelling terms
             old_local += ni_old * nj_old
             new_local += ni_new * nj_new
         end
 
-        ΔSr = new_local - old_local
-        Δlogpsi -= weight * ΔSr
+        # Sum Jastrow part of ratio
+        ΔSR = new_local - old_local
+        Δlogpsi -= weight * ΔSR
     end
 
     return Δlogpsi

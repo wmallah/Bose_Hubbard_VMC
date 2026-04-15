@@ -9,55 +9,59 @@ import ..VMCBoseHubbard: estimate_tau
 import ..VMCBoseHubbard: JastrowParams
 import ..VMCBoseHubbard: optimize_jastrow_SR
 
-function compute_q_grid(L::Int, Nv::Int)
-    m = collect(1:Nv)
-    return 2π .* m ./ L
-end
-
 function realspace_to_momentum_jastrow(vr::Vector{Float64}, L::Int)
     Rmax = fld(L, 2)
-    @assert length(vr) == Rmax
+    @assert length(vr) == Rmax + 1
 
-    q = compute_q_grid(L, Rmax)
-    vq = zeros(Float64, Rmax)
+    q_vec = [2π * m / L for m in 0:Rmax]
+    vq_vec = zeros(Float64, Rmax + 1)
 
     if iseven(L)
-        for iq in 1:Rmax
-            qq = q[iq]
-            s = 0.0
+        for iq in eachindex(q_vec)
+            qq = q_vec[iq]
+
+            s = vr[1]  # r = 0
+
             for r in 1:(Rmax - 1)
-                s += 2.0 * vr[r] * cos(qq * r)
+                s += 2.0 * vr[r + 1] * cos(qq * r)
             end
-            s += vr[Rmax] * cos(qq * Rmax)
-            vq[iq] = s
+
+            s += vr[Rmax + 1] * cos(qq * Rmax)  # r = L/2
+            vq_vec[iq] = s
         end
     else
-        for iq in 1:Rmax
-            qq = q[iq]
-            s = 0.0
+        for iq in eachindex(q_vec)
+            qq = q_vec[iq]
+
+            s = vr[1]  # r = 0
+
             for r in 1:Rmax
-                s += 2.0 * vr[r] * cos(qq * r)
+                s += 2.0 * vr[r + 1] * cos(qq * r)
             end
-            vq[iq] = s
+
+            vq_vec[iq] = s
         end
     end
 
-    return q, vq
+    return q_vec, vq_vec
 end
+
 
 # -----------------------
 # System parameters
 # -----------------------
 L = 60
 N_target = 60
-t = 1.0 / 2.0             # NOTE: Capello also follows the "t/2" convention like Krauth did for Gutzwiller
+t = 1.0 / 2.0            # NOTE: Capello also follows the "t/2" convention like Krauth did for Gutzwiller
 n_max = N_target
 
 # Initial REAL-SPACE Jastrow parameters
-vr_init = zeros(fld(L, 2))
+vr_init = zeros(fld(L, 2) + 1)
 
 # Parameter scans
-U_vals = [2.0, 2.4, 2.5, 3.0, 4.0, 6.0] ./ t
+U_vals = [2.0, 2.4, 2.5, 3.0, 4.0, 6.0]
+# U_vals = 0.0:1.0:10.0
+# U_vals = [3.0]
 μ_vals = zeros(length(U_vals))
 
 dim = "1D"
@@ -105,9 +109,9 @@ for (U, μ) in zip(U_vals, μ_vals)
         n_max;
         η = 0.05,
         num_walkers = 200,
-        num_MC_steps = 5_000,
-        num_equil_steps = 1_000,
-        block_size = 200,
+        num_MC_steps = 4_000,
+        num_equil_steps = 800,
+        block_size = 100,
         z = 1.0
     )
 
@@ -117,13 +121,13 @@ for (U, μ) in zip(U_vals, μ_vals)
     # Save optimized v(r)
     # -----------------------
     vr = copy(params_opt.vr)
-    Rmax = length(vr)
+    Rmax = length(vr) - 1
 
     vr_file = "$(dir_base)/VMC_vr_vs_r_U$(U).dat"
     open(vr_file, "w") do io
         println(io, "# r   v_r")
-        for r in 1:Rmax
-            println(io, "$(r) $(vr[r])")
+        for r in 0:Rmax
+            println(io, "$(r) $(vr[r + 1])")
         end
     end
 
@@ -161,7 +165,7 @@ for (U, μ) in zip(U_vals, μ_vals)
     # --------------------------------
     # Use optimized v(r) as next guess
     # --------------------------------
-    vr_init .= params_opt.vr
+    vr_init .= params_opt.vr   
 
     # -----------------------
     # Final high-statistics evaluation
@@ -173,9 +177,9 @@ for (U, μ) in zip(U_vals, μ_vals)
         n_max,
         grand_canonical,
         projective;
-        num_walkers = 100,
-        num_MC_steps = 2_500,
-        num_equil_steps = 500,
+        num_walkers = 200,
+        num_MC_steps = 5_000,
+        num_equil_steps = 1_000,
         block_size = 100
     )
 

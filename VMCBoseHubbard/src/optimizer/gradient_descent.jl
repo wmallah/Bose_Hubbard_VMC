@@ -126,7 +126,7 @@ function flatten_params(params::JastrowParams)
 end
 
 function unflatten_params(v::Vector{T}, L::Int) where {T<:Real}
-    @assert length(v) == fld(L, 2)
+    @assert length(v) == fld(L, 2) + 1
     return JastrowParams(copy(v))
 end
 

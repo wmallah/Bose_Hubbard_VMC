@@ -1,0 +1,3 @@
+method,ansatz,L,N,U,beta,pbc,mean_energy,sem_energy,mean_kinetic,sem_kinetic,mean_potential,sem_potential,source
+QMC,QMC,64,65,3.0,32.0,True,-70.82728859375,0.49049779835003626,-114.15288359374999,0.23787002797753123,43.325595,0.46714519328891707,/Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/QMC/1D_L64_N65/K_square_1D_64L_65N_PBC_3.000U_32.00beta_200bins1000_seed2001.dat | /Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/QMC/1D_L64_N65/V_square_1D_64L_65N_PBC_3.000U_32.00beta_200bins1000_seed2001.dat
+VMC,Jastrow_realspace,64,65,3.0,,True,-70.34440621796546,0.0008372126985990957,,,,,/Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/C/1D/L64_N65/jastrow_realspace/VMC_results.dat
