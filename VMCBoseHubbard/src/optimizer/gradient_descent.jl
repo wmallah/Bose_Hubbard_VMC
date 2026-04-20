@@ -139,16 +139,21 @@ function optimize_jastrow_SR(sys::System,
                              num_MC_steps::Int = 30000,
                              num_equil_steps::Int = 5000,
                              block_size::Int = 200,
-                             z::Float64 = 1.0)
+                             z::Float64 = 1.0,
+                             max_iters::Int = 200)
 
     history = []
 
-    λ = 1e-2
+    λ = 1e-3
     max_step = 0.2
+    zero_tol = 1e-14
 
     L = length(sys.lattice.neighbors)
 
-    while true
+    prev_E = nothing
+    prev_err = nothing
+
+    for iter in 1:max_iters
 
         ############################################################
         # Monte Carlo sampling
@@ -189,12 +194,27 @@ function optimize_jastrow_SR(sys::System,
 
         snr = similar(g)
         for i in eachindex(g)
-            snr[i] = SE_g[i] > 0 ? abs(g[i]) / SE_g[i] : Inf
+            if SE_g[i] > zero_tol
+                snr[i] = abs(g[i]) / SE_g[i]
+            elseif abs(g[i]) <= zero_tol
+                snr[i] = 0.0
+            else
+                snr[i] = Inf
+            end
         end
 
+        println("Iteration = ", iter)
         println("Energy = $(round(E, digits=8)) ± $(round(err, digits=8))")
         println("Gradient norm = ", norm(g))
         println("Max SNR = ", maximum(snr))
+
+        if prev_E !== nothing
+            ΔE = abs(E - prev_E)
+            ΔE_err = sqrt(err^2 + prev_err^2)
+
+            println("|ΔE| = ", ΔE)
+            println("σ(ΔE) = ", ΔE_err)
+        end
 
         push!(history,
               (params = flatten_params(params),
@@ -206,9 +226,23 @@ function optimize_jastrow_SR(sys::System,
         # Statistical convergence test
         ############################################################
 
-        if all(abs.(g) .< z .* SE_g)
+        if all(abs.(g) .<= z .* SE_g .+ zero_tol)
             println("All gradient components statistically zero. Converged.")
             break
+        end
+
+        ############################################################
+        # Energy convergence test
+        ############################################################
+
+        if prev_E !== nothing
+            ΔE = abs(E - prev_E)
+            ΔE_err = sqrt(err^2 + prev_err^2)
+
+            if ΔE <= ΔE_err + zero_tol
+                println("Energy change is smaller than its statistical error. Converged.")
+                break
+            end
         end
 
         ############################################################
@@ -228,11 +262,13 @@ function optimize_jastrow_SR(sys::System,
 
         v_old = flatten_params(params)
         v_new = v_old .- Δv
-        v_new .-= v_new[end]
+        # v_new .-= v_new[end]
         params = unflatten_params(v_new, L)
 
-        η *= 0.998
+        prev_E = E
+        prev_err = err
 
+        η *= 0.998
     end
 
     return params, history

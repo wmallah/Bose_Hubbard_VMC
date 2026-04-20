@@ -219,10 +219,10 @@ vr_init = [-0.1625881E+01,
     -0.9387513E-03,
     -0.4239784E-03,
     -0.4166991E-04,
-    -0.4166991E-04]
+    0.0]
 
 # Parameter scans
-# U_vals = [2.0, 2.4, 2.5, 3.0, 4.0, 6.0]
+# U_vals = [2.0, 2.4, 2.5, 3.0, 4.0, 6.0] / t
 # U_vals = 0.0:1.0:10.0
 U_vals = [3.3578] / t
 μ_vals = zeros(length(U_vals))
@@ -273,11 +273,11 @@ for (U, μ) in zip(U_vals, μ_vals)
         params_init,
         N_target,
         n_max;
-        η = 0.0005,
+        η = 0.05,
         num_walkers = 100,
-        num_MC_steps = 2_500,
-        num_equil_steps = 500,
-        block_size = 10_000,
+        num_MC_steps = 5_000,
+        num_equil_steps = 1_000,
+        block_size = 20_000,
         z = 1.0
     )
 
@@ -346,9 +346,9 @@ for (U, μ) in zip(U_vals, μ_vals)
         grand_canonical,
         projective;
         num_walkers = 400,
-        num_MC_steps = 45000,
-        num_equil_steps = 5000,
-        block_size = 400000
+        num_MC_steps = 10_000,
+        num_equil_steps = 2_000,
+        block_size = 40_000
     )
 
     acceptance_ratio = final_result.acceptance_ratio
