@@ -48,5 +48,5 @@ function acceptance_probability_realspace_jastrow(
     Δlogpsi = compute_delta_logpsi_realspace(n, from_site, to_site, ψ)
     log_ratio = 2.0 * Δlogpsi + log(n[from_site]) - log(n[to_site] + 1)
 
-    return log_ratio >= 0.0 ? 1.0 : exp(log_ratio)
+    return log_ratio
 end

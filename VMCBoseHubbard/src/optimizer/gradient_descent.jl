@@ -130,7 +130,6 @@ function unflatten_params(v::Vector{T}, L::Int) where {T<:Real}
     return JastrowParams(copy(v))
 end
 
-
 function optimize_jastrow_SR(sys::System,
                              params::JastrowParams,
                              N_target::Int,
@@ -144,7 +143,7 @@ function optimize_jastrow_SR(sys::System,
 
     history = []
 
-    λ = 1e-3
+    λ = 1e-2
     max_step = 0.2
 
     L = length(sys.lattice.neighbors)
@@ -179,7 +178,7 @@ function optimize_jastrow_SR(sys::System,
         SE_g = result.gradient_standard_error
         S = result.metric
 
-        if any(!isfinite, g) || any(!isfinite, SE_g) || any(!isfinite, S)
+        if any(x -> !isfinite(x), g) || any(x -> !isfinite(x), SE_g) || any(x -> !isfinite(x), S)
             @warn "Stopping: non-finite values encountered"
             break
         end
@@ -229,6 +228,7 @@ function optimize_jastrow_SR(sys::System,
 
         v_old = flatten_params(params)
         v_new = v_old .- Δv
+        v_new .-= v_new[end]
         params = unflatten_params(v_new, L)
 
         η *= 0.998

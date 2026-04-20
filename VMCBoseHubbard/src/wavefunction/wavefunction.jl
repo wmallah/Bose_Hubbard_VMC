@@ -40,5 +40,4 @@ end
 struct JastrowParams{T <: Real} <: Wavefunction
   # Vector for real space coefficients
   vr::Vector{T}      # fld(L/2) + 1 distinct coefficients because of translational invariance
-  # [NEED TO NORMALIZE FULL WAVEFUNCTION]
 end

@@ -4,7 +4,7 @@ using FFTW
 
 
 
-Random.seed!(1)
+Random.seed!(0)
 
 #=
 Purpose: store information about the VMC results
@@ -348,32 +348,36 @@ function MC_integration_Jastrow(sys::System,
     # Measurement storage
     ############################################################
 
-    # Histogram total particle number
     PN = zeros(Int, L * n_max + 1)
 
-    # Block accumulators
-    block_sum_E = 0.0
-    block_sum_T = 0.0
-    block_sum_V = 0.0
-    block_count = 0
+    # Current block accumulators
+    block_sum_E  = 0.0
+    block_sum_T  = 0.0
+    block_sum_V  = 0.0
+    block_sum_O  = zeros(Float64, length(params.vr))
+    block_sum_OO = zeros(Float64, length(params.vr), length(params.vr))
+    block_sum_EO = zeros(Float64, length(params.vr))
+    block_count  = 0
 
-    block_means_E = Float64[]
-    block_means_T = Float64[]
-    block_means_V = Float64[]
-    total_N = Float64[]
+    # Per-block means (used for SEMs and blocked gradient error bars)
+    block_means_E  = Float64[]
+    block_means_T  = Float64[]
+    block_means_V  = Float64[]
+    block_means_O  = Vector{Vector{Float64}}()
+    block_means_EO = Vector{Vector{Float64}}()
 
-    # Gradient / SR storage
+    # Global sums over COMPLETED BLOCKS ONLY
     Nv = length(params.vr)
 
-    sum_O = zeros(Float64, Nv)
-    sum_OO = zeros(Float64, Nv, Nv)
-    sum_EO = zeros(Float64, Nv)
+    used_sum_E  = 0.0
+    used_sum_T  = 0.0
+    used_sum_V  = 0.0
+    used_sum_O  = zeros(Float64, Nv)
+    used_sum_OO = zeros(Float64, Nv, Nv)
+    used_sum_EO = zeros(Float64, Nv)
 
-    block_sum_g = zeros(Float64, Nv)
-    block_gradients = Vector{Vector{Float64}}()
-
-    num_samples = 0
-    num_completed_blocks = 0
+    num_samples_used = 0
+    num_samples_total = 0
 
     num_accepted_moves = 0
     num_failed_moves = 0
@@ -393,23 +397,20 @@ function MC_integration_Jastrow(sys::System,
             if grand_canonical
                 error("Grand canonical moves not implemented yet for the real-space Jastrow branch.")
             else
-                # choose source site with at least one boson
                 from = rand(1:L)
                 while n[from] == 0
                     from = rand(1:L)
                 end
 
-                # choose neighboring target not already at n_max
                 to = rand(sys.lattice.neighbors[from])
                 while n[to] == n_max
                     to = rand(sys.lattice.neighbors[from])
                 end
 
-                # compute acceptance from the ORIGINAL configuration
                 Δlogpsi = compute_delta_logpsi_realspace(n, from, to, params)
-                log_ratio = 2.0 * Δlogpsi + log(n[from]) - log(n[to] + 1)
+                log_ratio = acceptance_probability_realspace_jastrow(n, from, to, params)
 
-                if isfinite(log_ratio) && (log_ratio >= 0.0 || log(rand()) < log_ratio)
+                if isfinite(log_ratio) && (log(rand()) < log_ratio)
                     n[from] -= 1
                     n[to]   += 1
 
@@ -432,44 +433,56 @@ function MC_integration_Jastrow(sys::System,
                 PN[N_now + 1] += 1
             end
 
-            if step >= num_equil_steps
+            if step > num_equil_steps
                 if !projective || (projective && N_now == N_target)
 
-                    E, T, V = local_energy_jastrow(w.n, sys, params)
+                    E, T, V = local_energy_jastrow(w.n, sys, n_max, params)
 
                     if isfinite(E)
-                        block_sum_E += E
-                        block_sum_T += T
-                        block_sum_V += V
-                        block_count += 1
-
                         O = logpsi_derivatives_realspace(w.n)
 
-                        # Store sample accumulators for gradient / SR
-                        sum_O  .+= O
-                        sum_OO .+= O * O'
-                        sum_EO .+= E .* O
-                        push!(total_N, N_now)
+                        block_sum_E  += E
+                        block_sum_T  += T
+                        block_sum_V  += V
+                        block_sum_O  .+= O
+                        block_sum_OO .+= O * O'
+                        block_sum_EO .+= E .* O
+                        block_count  += 1
 
-                        # block gradient estimate
-                        g_sample = 2.0 .* (E .* O)
-                        block_sum_g .+= g_sample
-
-                        num_samples += 1
+                        num_samples_total += 1
 
                         if block_count == block_size
-                            push!(block_means_E, block_sum_E / block_size)
-                            push!(block_means_T, block_sum_T / block_size)
-                            push!(block_means_V, block_sum_V / block_size)
-                            push!(block_gradients, block_sum_g ./ block_size)
+                            # Block means
+                            E_block  = block_sum_E / block_size
+                            T_block  = block_sum_T / block_size
+                            V_block  = block_sum_V / block_size
+                            O_block  = block_sum_O ./ block_size
+                            EO_block = block_sum_EO ./ block_size
 
-                            block_sum_E = 0.0
-                            block_sum_T = 0.0
-                            block_sum_V = 0.0
-                            block_sum_g .= 0.0
-                            block_count = 0
+                            push!(block_means_E, E_block)
+                            push!(block_means_T, T_block)
+                            push!(block_means_V, V_block)
+                            push!(block_means_O, copy(O_block))
+                            push!(block_means_EO, copy(EO_block))
 
-                            num_completed_blocks += 1
+                            # Add this completed block to the global used sums
+                            used_sum_E  += block_sum_E
+                            used_sum_T  += block_sum_T
+                            used_sum_V  += block_sum_V
+                            used_sum_O  .+= block_sum_O
+                            used_sum_OO .+= block_sum_OO
+                            used_sum_EO .+= block_sum_EO
+
+                            num_samples_used += block_size
+
+                            # Reset block accumulators
+                            block_sum_E  = 0.0
+                            block_sum_T  = 0.0
+                            block_sum_V  = 0.0
+                            block_sum_O .= 0.0
+                            block_sum_OO .= 0.0
+                            block_sum_EO .= 0.0
+                            block_count  = 0
                         end
                     end
                 end
@@ -484,15 +497,17 @@ function MC_integration_Jastrow(sys::System,
     total_attempts = num_accepted_moves + num_failed_moves
     acceptance_ratio = total_attempts > 0 ? num_accepted_moves / total_attempts : 0.0
 
-    if isempty(block_means_E)
-        @warn "No valid energy samples collected!"
+    n_blocks = length(block_means_E)
+
+    if n_blocks == 0 || num_samples_used == 0
+        @warn "No valid completed blocks collected!"
 
         return VMCResults(
             Inf, Inf,
             Inf, Inf,
             Inf, Inf,
             Float64[], Float64[], zeros(Float64, 0, 0),
-            num_samples,
+            0,
             acceptance_ratio,
             Float64[],
             num_failed_moves,
@@ -500,29 +515,56 @@ function MC_integration_Jastrow(sys::System,
         )
     end
 
-    E_mean = mean(block_means_E)
-    E_error = std(block_means_E) / sqrt(length(block_means_E))
+    if block_count > 0
+        @warn "Discarding incomplete final block of $block_count samples for consistent blocked statistics."
+    end
 
-    T_mean = mean(block_means_T)
-    T_error = std(block_means_T) / sqrt(length(block_means_T))
+    if n_blocks < 5
+        @warn "Only $n_blocks completed blocks collected; gradient error bars may be unreliable."
+    end
 
-    V_mean = mean(block_means_V)
-    V_error = std(block_means_V) / sqrt(length(block_means_V))
+    # Point estimates from the SAME completed-block sample set
+    E_mean  = used_sum_E  / num_samples_used
+    T_mean  = used_sum_T  / num_samples_used
+    V_mean  = used_sum_V  / num_samples_used
+    O_mean  = used_sum_O  / num_samples_used
+    OO_mean = used_sum_OO / num_samples_used
+    EO_mean = used_sum_EO / num_samples_used
 
-    # Use num_samples here, not number of completed blocks
-    O_mean  = sum_O  ./ num_samples
-    OO_mean = sum_OO ./ num_samples
-    EO_mean = sum_EO ./ num_samples
+    # Energy SEMs from block means
+    if n_blocks > 1
+        E_error = std(block_means_E) / sqrt(n_blocks)
+        T_error = std(block_means_T) / sqrt(n_blocks)
+        V_error = std(block_means_V) / sqrt(n_blocks)
+    else
+        E_error = Inf
+        T_error = Inf
+        V_error = Inf
+    end
 
+    # SR gradient / metric
     g = 2.0 .* (EO_mean .- E_mean .* O_mean)
     S = OO_mean .- O_mean * O_mean'
+    S = 0.5 .* (S + S')
 
-    if isempty(block_gradients)
-        SE_g = fill(Inf, Nv)
+    # Blocked standard error for the SAME estimator family:
+    # X_i = 2 * (E_i O_i - E_mean O_i - O_mean E_i + E_mean O_mean)
+    # So the corresponding block mean is:
+    # X_b = 2 * (EO_b - E_mean O_b - O_mean E_b + E_mean O_mean)
+    if n_blocks > 1
+        g_blocks = Matrix{Float64}(undef, n_blocks, Nv)
+
+        for b in 1:n_blocks
+            E_b  = block_means_E[b]
+            O_b  = block_means_O[b]
+            EO_b = block_means_EO[b]
+
+            g_blocks[b, :] .= 2.0 .* (EO_b .- E_mean .* O_b .- E_b .* O_mean .+ E_mean .* O_mean)
+        end
+
+        SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(n_blocks)
     else
-        g_blocks = hcat(block_gradients...)'
-        g_blocks .-= mean(g_blocks, dims=1)
-        SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(size(g_blocks, 1))
+        SE_g = fill(Inf, Nv)
     end
 
     return VMCResults(
@@ -530,7 +572,7 @@ function MC_integration_Jastrow(sys::System,
         T_mean, T_error,
         V_mean, V_error,
         g, SE_g, S,
-        num_samples,
+        num_samples_used,
         acceptance_ratio,
         block_means_E,
         num_failed_moves,

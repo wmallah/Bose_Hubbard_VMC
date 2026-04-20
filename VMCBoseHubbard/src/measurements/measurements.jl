@@ -142,6 +142,7 @@ end
 function local_kinetic_energy_jastrow(
     n::Vector{Int},
     t::Float64,
+    n_max::Int,
     ψ::Wavefunction
 )
     L = length(n)
@@ -151,15 +152,15 @@ function local_kinetic_energy_jastrow(
         j = mod1(i + 1, L)
 
         # hop j -> i gives a_i^† a_j
-        if n[j] > 0
+        if n[j] > 0 && n[i] < n_max
             Δlogpsi = compute_delta_logpsi_realspace(n, j, i, ψ)
-            Ekin -= t * sqrt((n[i] + 1) * n[j]) * exp(Δlogpsi)
+            Ekin -= t * n[j] * exp(Δlogpsi)                        
         end
 
         # hop i -> j gives a_j^† a_i
-        if n[i] > 0
+        if n[i] > 0 && n[j] < n_max
             Δlogpsi = compute_delta_logpsi_realspace(n, i, j, ψ)
-            Ekin -= t * sqrt((n[j] + 1) * n[i]) * exp(Δlogpsi)
+            Ekin -= t * n[i] * exp(Δlogpsi)                       
         end
     end
 
@@ -170,12 +171,13 @@ end
 function local_energy_jastrow(
     n::Vector{Int},
     sys::System,
+    n_max::Int,
     ψ::Wavefunction
 )
     t, U = sys.t, sys.U
 
     Epot = local_potential_energy(n, U)
-    Ekin = local_kinetic_energy_jastrow(n, t, ψ)
+    Ekin = local_kinetic_energy_jastrow(n, t, n_max, ψ)
     return Ekin + Epot, Ekin, Epot
 end
 
@@ -188,9 +190,12 @@ function logpsi_derivatives_realspace(n::Vector{Int})
     for idx in 1:(Rmax + 1)
         R = idx - 1
 
-        factor = 1.0
-        if iseven(L) && R == Rmax
-            factor = 0.5
+        # Need to multiply by 0.5 to avoid double-counting at R = 0 and R = Rmax when the number of sites is even
+        prefactor = 1.0
+        if R == 0
+            prefactor = 0.5
+        elseif iseven(L) && R == Rmax
+            prefactor= 0.5
         end
 
         SR = 0.0
@@ -199,7 +204,7 @@ function logpsi_derivatives_realspace(n::Vector{Int})
             SR += n[i] * n[j]
         end
 
-        O[idx] = -factor * SR
+        O[idx] = prefactor * SR         # CHANGED FROM O[idx] = -prefactor * SR
     end
 
     return O
@@ -218,10 +223,16 @@ function compute_logpsi_realspace(n::Vector{Int}, ψ::Wavefunction)
     for idx in 1:(Rmax + 1)
         R = idx - 1
 
-        weight = vr[idx]
-        if iseven(L) && R == Rmax
-            weight *= 0.5
+        # Need to multiply by 0.5 to avoid double-counting at R = 0 and R = Rmax when the number of sites is even
+        prefactor = 1.0
+        if R == 0
+            prefactor = 0.5
+        elseif iseven(L) && R == Rmax
+            prefactor= 0.5
         end
+
+        # The "weights" in the sum we are computing are the Jastrow potentials
+        weight = prefactor * vr[idx]
 
         SR = 0.0
         for i in 1:L
@@ -229,7 +240,7 @@ function compute_logpsi_realspace(n::Vector{Int}, ψ::Wavefunction)
             SR += n[i] * n[j]
         end
 
-        logpsi -= weight * SR
+        logpsi += weight * SR               # CHANGED FROM logpsi -= weight * SR
     end
 
     return logpsi
@@ -265,14 +276,17 @@ function compute_delta_logpsi_realspace(
     # Sum over site distances using Julia indexing (idx = 1 --> R = 0, idx = Rmax + 1 --> R = Rmax)
     for idx in 1:(Rmax + 1)
         R = idx - 1
+        
+        # Need to multiply by 0.5 to avoid double-counting at R = 0 and R = Rmax when the number of sites is even
+        prefactor = 1.0
+        if R == 0
+            prefactor = 0.5
+        elseif iseven(L) && R == Rmax
+            prefactor= 0.5
+        end
 
         # The "weights" in the sum we are computing are the Jastrow potentials
-        weight = vr[idx]
-        
-        # Need to multiply by 0.5 to avoid double-counting at R = Rmax when the number of sites is even
-        if iseven(L) && R == Rmax
-            weight *= 0.5
-        end
+        weight = prefactor * vr[idx]
 
         # 
         affected_i = unique((
@@ -305,8 +319,8 @@ function compute_delta_logpsi_realspace(
         end
 
         # Sum Jastrow part of ratio
-        ΔSR = new_local - old_local
-        Δlogpsi -= weight * ΔSR
+        ΔSR = (new_local - old_local)
+        Δlogpsi += weight * ΔSR                 # CHANGED FROM Δlogpsi -= weight * ΔSR
     end
 
     return Δlogpsi
