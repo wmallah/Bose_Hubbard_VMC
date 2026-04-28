@@ -146,7 +146,7 @@ function optimize_jastrow_SR(sys::System,
 
     λ = 1e-3
     max_step = 0.2
-    zero_tol = 1e-14
+    zero_tol = 1e-16
 
     L = length(sys.lattice.neighbors)
 
@@ -204,9 +204,10 @@ function optimize_jastrow_SR(sys::System,
         end
 
         println("Iteration = ", iter)
-        println("Energy = $(round(E, digits=8)) ± $(round(err, digits=8))")
+        println("Energy = $(round(E, digits=8)) ± $err")
         println("Gradient norm = ", norm(g))
-        println("Max SNR = ", maximum(snr))
+        # println("Max SNR = ", maximum(snr))
+        println("SEG = ", SE_g)
 
         if prev_E !== nothing
             ΔE = abs(E - prev_E)
@@ -226,7 +227,7 @@ function optimize_jastrow_SR(sys::System,
         # Statistical convergence test
         ############################################################
 
-        if all(abs.(g) .<= z .* SE_g .+ zero_tol)
+        if all(abs.(g) .<= z .* SE_g)
             println("All gradient components statistically zero. Converged.")
             break
         end
@@ -239,7 +240,7 @@ function optimize_jastrow_SR(sys::System,
             ΔE = abs(E - prev_E)
             ΔE_err = sqrt(err^2 + prev_err^2)
 
-            if ΔE <= ΔE_err + zero_tol
+            if ΔE <= ΔE_err
                 println("Energy change is smaller than its statistical error. Converged.")
                 break
             end

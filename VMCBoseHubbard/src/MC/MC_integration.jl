@@ -559,7 +559,7 @@ function MC_integration_Jastrow(sys::System,
             O_b  = block_means_O[b]
             EO_b = block_means_EO[b]
 
-            g_blocks[b, :] .= 2.0 .* (EO_b .- E_mean .* O_b .- E_b .* O_mean .+ E_mean .* O_mean)
+           g_blocks[b, :] .= 2.0 .* (EO_b .- E_b .* O_b)
         end
 
         SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(n_blocks)

@@ -1,0 +1,6 @@
+method,ansatz,L,N,U,beta,pbc,mean_energy,sem_energy,mean_kinetic,sem_kinetic,mean_potential,sem_potential,source
+VMC,Jastrow_realspace,16,16,1.0,,True,-26.10439612527098,0.0001825250591917248,,,,,/Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/C/1D/L16_N16/jastrow_realspace/VMC_results.dat
+VMC,Jastrow_realspace,16,16,3.0,,True,-17.747650887177254,0.0008369455426832116,,,,,/Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/C/1D/L16_N16/jastrow_realspace/VMC_results.dat
+QMC,QMC,16,16,3.3578,16.0,True,-16.77963773649988,0.28405833272513376,-27.5272671875,0.16442535091661922,10.747629451000122,0.2463208180370263,/Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/QMC/1D_L16_N16/K_square_1D_16L_16N_PBC_3.3578U_16.00beta_200bins1000_seed2001.dat | /Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/QMC/1D_L16_N16/V_square_1D_16L_16N_PBC_3.3578U_16.00beta_200bins1000_seed2001.dat
+VMC,Jastrow_realspace,16,16,3.3578,,True,-16.52570218089026,0.0035569903897090978,,,,,/Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/C/1D/L16_N16/jastrow_realspace/VMC_results.dat
+VMC,Jastrow_realspace,16,16,6.0,,True,-9.878978687495447,0.0021590283078115817,,,,,/Users/wmallah/Documents/GitHub/Bose_Hubbard_VMC/VMCBoseHubbard/data/C/1D/L16_N16/jastrow_realspace/VMC_results.dat

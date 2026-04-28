@@ -20,6 +20,7 @@ DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "analysis_output"
 
 VMC_ANSATZ_NAME = "Jastrow_realspace"
 VMC_PBC = True
+U_ROUND_DIGITS = 8
 
 
 @dataclass
@@ -38,6 +39,10 @@ class EnergyPoint:
     mean_potential: Optional[float]
     sem_potential: Optional[float]
     source: str
+
+
+def normalize_u(u: float, digits: int = U_ROUND_DIGITS) -> float:
+    return round(float(u), digits)
 
 
 def sem(x: np.ndarray) -> float:
@@ -83,7 +88,7 @@ def parse_qmc_filename(filepath: str | Path) -> Dict:
 
         m = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)U", token)
         if m:
-            U = float(m.group(1))
+            U = normalize_u(float(m.group(1)))
             continue
 
         m = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)beta", token)
@@ -240,7 +245,7 @@ def load_vmc_points(
                 ansatz=ansatz,
                 L=L,
                 N=N,
-                U=float(U),
+                U=normalize_u(float(U)),
                 beta=None,
                 pbc=pbc,
                 mean_energy=float(E),
@@ -334,19 +339,51 @@ def plot_energy_per_site_vs_U(points: List[EnergyPoint], outpath: str | Path, ti
     plt.close()
 
 
-def plot_delta_E_vmc_minus_qmc(points: List[EnergyPoint], outpath: str | Path, title: str) -> None:
-    qmc = {p.U: p for p in points if p.method == "QMC"}
-    vmc = {p.U: p for p in points if p.method == "VMC"}
+def plot_delta_E_vmc_minus_qmc(
+    points: List[EnergyPoint],
+    outpath: str | Path,
+    title: str,
+) -> None:
+    qmc_points = [p for p in points if p.method == "QMC"]
+    vmc_points = [p for p in points if p.method == "VMC"]
 
-    common_U = sorted(set(qmc) & set(vmc))
+    if not qmc_points:
+        print(f"Skipping plot {outpath}: no QMC points.")
+        return
+
+    if not vmc_points:
+        print(f"Skipping plot {outpath}: no VMC points.")
+        return
+
+    qmc_map: Dict[float, EnergyPoint] = {}
+    vmc_map: Dict[float, EnergyPoint] = {}
+
+    for p in qmc_points:
+        qmc_map[normalize_u(p.U)] = p
+
+    for p in vmc_points:
+        vmc_map[normalize_u(p.U)] = p
+
+    print("QMC U values:", sorted(qmc_map.keys()))
+    print("VMC U values:", sorted(vmc_map.keys()))
+
+    common_U = sorted(set(qmc_map.keys()) & set(vmc_map.keys()))
+    print("Matched U values for delta plot:", common_U)
+
     if not common_U:
         print(f"Skipping plot {outpath}: no matching VMC/QMC U values.")
         return
 
     U = np.array(common_U, dtype=float)
-    dE = np.array([vmc[u].mean_energy - qmc[u].mean_energy for u in common_U], dtype=float)
+    dE = np.array(
+        [vmc_map[u].mean_energy - qmc_map[u].mean_energy for u in common_U],
+        dtype=float,
+    )
     ddE = np.array(
-        [np.sqrt(vmc[u].sem_energy**2 + qmc[u].sem_energy**2) for u in common_U],
+        [
+            np.sqrt(vmc_map[u].sem_energy**2 + qmc_map[u].sem_energy**2)
+            for u in common_U
+        ],
         dtype=float,
     )
 

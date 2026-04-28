@@ -94,18 +94,20 @@ for (U, μ) in zip(U_vals, μ_vals)
 
     push!(results, (U = U, κ = κ_opt, result = final_result))
 
-    # -----------------------
-    # Save particle-number histogram
-    # -----------------------
+    if grand_canonical
+        # -----------------------
+        # Save particle-number histogram
+        # -----------------------
 
-    hist_file = "$(dir_base)/PN_hist_U$(U).dat"
+        hist_file = "$(dir_base)/gutzwiller/PN_hist_U$(U).dat"
 
-    open(hist_file, "w") do io
-        println(io, "# N   count")
+        open(hist_file, "w") do io
+            println(io, "# N   count")
 
-        for (i, count) in enumerate(final_result.PN)
-            if count > 0
-                println(io, "$(i-1) $count")
+            for (i, count) in enumerate(final_result.PN)
+                if count > 0
+                    println(io, "$(i-1) $count")
+                end
             end
         end
     end
@@ -116,7 +118,7 @@ end
 # Save total energies
 # -----------------------
 
-open("$(dir_base)/VMC_results.dat", "w") do io
+open("$(dir_base)/gutzwiller/VMC_results.dat", "w") do io
 
     println(io, "# U   kappa   energy   sem")
 
@@ -138,7 +140,7 @@ end
 # Save kinetic / potential parts
 # -----------------------
 
-open("$(dir_base)/VMC_energy_parts.dat", "w") do io
+open("$(dir_base)/gutzwiller/VMC_energy_parts.dat", "w") do io
 
     println(io, "# U   E_kin   E_kin_sem   E_pot   E_pot_sem")
 
