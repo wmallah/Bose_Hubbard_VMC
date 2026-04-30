@@ -206,8 +206,8 @@ function optimize_jastrow_SR(sys::System,
         println("Iteration = ", iter)
         println("Energy = $(round(E, digits=8)) ± $err")
         println("Gradient norm = ", norm(g))
-        # println("Max SNR = ", maximum(snr))
-        println("SEG = ", SE_g)
+        println("Max SNR = ", maximum(snr))
+        # println("SEG = ", SE_g)
 
         if prev_E !== nothing
             ΔE = abs(E - prev_E)

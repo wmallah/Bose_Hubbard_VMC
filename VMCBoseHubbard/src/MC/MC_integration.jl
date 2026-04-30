@@ -408,7 +408,7 @@ function MC_integration_Jastrow(sys::System,
                 end
 
                 Δlogpsi = compute_delta_logpsi_realspace(n, from, to, params)
-                log_ratio = acceptance_probability_realspace_jastrow(n, from, to, params)
+                log_ratio = log_acceptance_ratio_realspace_jastrow(n, from, to, params)
 
                 if isfinite(log_ratio) && (log(rand()) < log_ratio)
                     n[from] -= 1
@@ -545,12 +545,9 @@ function MC_integration_Jastrow(sys::System,
     # SR gradient / metric
     g = 2.0 .* (EO_mean .- E_mean .* O_mean)
     S = OO_mean .- O_mean * O_mean'
-    S = 0.5 .* (S + S')
+    # But due to floating-point accumulation, blocking, and matrix operations, you can get tiny asymmetries. The symmetrization forces the metric to be exactly symmetric before solving the SR system. That is usually good practice because the SR equation assumes a symmetric covariance matrix.
+    # S = 0.5 .* (S + S')
 
-    # Blocked standard error for the SAME estimator family:
-    # X_i = 2 * (E_i O_i - E_mean O_i - O_mean E_i + E_mean O_mean)
-    # So the corresponding block mean is:
-    # X_b = 2 * (EO_b - E_mean O_b - O_mean E_b + E_mean O_mean)
     if n_blocks > 1
         g_blocks = Matrix{Float64}(undef, n_blocks, Nv)
 
@@ -559,7 +556,9 @@ function MC_integration_Jastrow(sys::System,
             O_b  = block_means_O[b]
             EO_b = block_means_EO[b]
 
-           g_blocks[b, :] .= 2.0 .* (EO_b .- E_b .* O_b)
+            g_blocks[b, :] .= 2.0 .* (
+                EO_b .- E_mean .* O_b .- E_b .* O_mean .+ E_mean .* O_mean
+            )
         end
 
         SE_g = vec(std(g_blocks, dims=1)) ./ sqrt(n_blocks)

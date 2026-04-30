@@ -35,7 +35,7 @@ function acceptance_probability_Gutzwiller(n::Vector{Int},
     return log_ratio ≥ 0 ? 1.0 : exp(log_ratio)
 end
 
-function acceptance_probability_realspace_jastrow(
+function log_acceptance_ratio_realspace_jastrow(
     n::Vector{Int},
     from_site::Int,
     to_site::Int,

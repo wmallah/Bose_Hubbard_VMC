@@ -194,7 +194,12 @@ function logpsi_derivatives_realspace(n::Vector{Int})
     for idx in 1:(Rmax + 1)
         R = idx - 1
 
-        # Need to multiply by 0.5 to avoid double-counting at R = 0 and R = Rmax when the number of sites is even
+        # prefactor matches the symmetric Jastrow convention
+        # logψ = -∑_R prefactor(R) * v_R * ∑_i n_i n_{i+R}
+        #
+        # R = 0 gets 1/2 from the usual symmetric density-density form.
+        # For even L, R = L/2 also gets 1/2 because each opposite-site pair
+        # appears twice in ∑_i n_i n_{i+R}.
         prefactor = 1.0
         if R == 0
             prefactor = 0.5
@@ -227,7 +232,12 @@ function compute_logpsi_realspace(n::Vector{Int}, ψ::Wavefunction)
     for idx in 1:(Rmax + 1)
         R = idx - 1
 
-        # Need to multiply by 0.5 to avoid double-counting at R = 0 and R = Rmax when the number of sites is even
+        # Symmetric real-space Jastrow convention:
+        # logψ = -∑_R c_R v_R ∑_i n_i n_{i+R}
+        #
+        # R = 0 gets c_R = 1/2 from the usual symmetric density-density form.
+        # For even L, R = L/2 also gets c_R = 1/2 because opposite-site
+        # pairs are counted twice in ∑_i n_i n_{i+R}.
         prefactor = 1.0
         if R == 0
             prefactor = 0.5
@@ -265,11 +275,10 @@ function compute_delta_logpsi_realspace(
     Rmax = fld(L, 2)
 
     # Assert quantities to ensure physical laws
-    @assert length(vr) == Rmax + 1
     @assert 1 <= from_site <= L
     @assert 1 <= to_site <= L
+    @assert from_site != to_site
     @assert n[from_site] > 0
-
     # Short-hand notation
     a = from_site
     b = to_site
@@ -281,7 +290,12 @@ function compute_delta_logpsi_realspace(
     for idx in 1:(Rmax + 1)
         R = idx - 1
         
-        # Need to multiply by 0.5 to avoid double-counting at R = 0 and R = Rmax when the number of sites is even
+        # Symmetric real-space Jastrow convention:
+        # logψ = -∑_R c_R v_R ∑_i n_i n_{i+R}
+        #
+        # R = 0 gets c_R = 1/2 from the usual symmetric density-density form.
+        # For even L, R = L/2 also gets c_R = 1/2 because opposite-site
+        # pairs are counted twice in ∑_i n_i n_{i+R}.
         prefactor = 1.0
         if R == 0
             prefactor = 0.5
