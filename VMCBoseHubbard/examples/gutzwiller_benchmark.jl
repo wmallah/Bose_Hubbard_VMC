@@ -4,30 +4,27 @@ Pkg.activate("../")
 include("../src/VMCBoseHubbard.jl")
 using .VMCBoseHubbard
 
-import ..VMCBoseHubbard: MC_integration_Gutzwiller
 import ..VMCBoseHubbard: estimate_tau
 
 # -----------------------
 # System parameters
 # -----------------------
 
-L = 12
-N_target = 12
-n_max = N_target
+L = 4
+N = 2
+n_max = N
 t = 1.0
 κ_init = 1.0
+wavefunction_init = GutzwillerWavefunction(κ_init, n_max)
 
-U_vals = [i for i in 0.0:1.0:10.0]
-μ_vals = zeros(11)
+# U_vals = [i for i in 0.0:1.0:10.0]
+U_vals = [0.0, 3.0, 3.3, 3.4, 4.0, 6.0]
 
 dim = "1D"
-grand_canonical = false
-projective = false
 
 lattice = Lattice1D(L)
-ensemble = !grand_canonical ? "C" : "GC"
 
-dir_base = "../data/$(ensemble)/$(dim)/L$(L)_N$(N_target)"
+dir_base = "../data/VMC/$(dim)/L$(L)_N$(N)/Gutzwiller"
 mkpath(dir_base)
 
 results = []
@@ -36,50 +33,46 @@ results = []
 # Loop over parameters
 # -----------------------
 
-for (U, μ) in zip(U_vals, μ_vals)
+for U in U_vals
 
-    println("Optimizing Gutzwiller κ for U = $U, μ = $μ")
+    println("Optimizing Gutzwiller κ for U = $U")
 
-    sys = System(t, U, μ, lattice)
+    sys = System(t, U, N, lattice)
 
     # -----------------------
     # Optimize κ (SR optimizer)
     # -----------------------
 
-    κ_opt, history = optimize_kappa_SR(
+    wavefunction_opt, history = optimize_SR(
         sys,
-        N_target,
-        n_max,
-        grand_canonical,
-        projective;
-        κ_init = κ_init,
+        wavefunction_init,
+        n_max;
         η = 0.05,
-        num_walkers = 200,
-        num_MC_steps = 10_000,
+        num_walkers = 100,
+        num_MC_steps = 5_000,
         num_equil_steps = 1_000,
-        block_size = 1500,
-        z = 1.0
+        block_size = 500,
     )
 
+    κ_opt = wavefunction_opt.κ
+    # Set initial gradient descent κ guess as optimal value from previous run
+    global κ_init = κ_opt
     println("    Optimal κ = $(round(κ_opt, digits=10))")
 
-    global κ_init = κ_opt
+    wavefunction_opt = GutzwillerWavefunction(κ_opt, n_max)
 
     # -----------------------
     # Final high-statistics run
     # -----------------------
 
-    final_result = MC_integration_Gutzwiller(
+    final_result = MC_integration(
         sys,
-        N_target,
-        κ_opt,
-        n_max,
-        grand_canonical,
-        projective;
-        num_walkers = 400,
-        num_MC_steps = 100_000,
-        num_equil_steps = 20_000,
-        block_size = 1500
+        wavefunction_opt,
+        n_max;
+        num_walkers = 200,
+        num_MC_steps = 10_000,
+        num_equil_steps = 2_000,
+        block_size = 40_000
     )
 
     acceptance_ratio = final_result.acceptance_ratio
@@ -93,32 +86,13 @@ for (U, μ) in zip(U_vals, μ_vals)
     println("Effective sample size ≈ ", length(energies)/(2τE))
 
     push!(results, (U = U, κ = κ_opt, result = final_result))
-
-    if grand_canonical
-        # -----------------------
-        # Save particle-number histogram
-        # -----------------------
-
-        hist_file = "$(dir_base)/gutzwiller/PN_hist_U$(U).dat"
-
-        open(hist_file, "w") do io
-            println(io, "# N   count")
-
-            for (i, count) in enumerate(final_result.PN)
-                if count > 0
-                    println(io, "$(i-1) $count")
-                end
-            end
-        end
-    end
-
 end
 
 # -----------------------
 # Save total energies
 # -----------------------
 
-open("$(dir_base)/gutzwiller/VMC_results.dat", "w") do io
+open("$(dir_base)/VMC_results.dat", "w") do io
 
     println(io, "# U   kappa   energy   sem")
 
@@ -140,7 +114,7 @@ end
 # Save kinetic / potential parts
 # -----------------------
 
-open("$(dir_base)/gutzwiller/VMC_energy_parts.dat", "w") do io
+open("$(dir_base)/VMC_energy_parts.dat", "w") do io
 
     println(io, "# U   E_kin   E_kin_sem   E_pot   E_pot_sem")
 

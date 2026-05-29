@@ -1,12 +1,12 @@
 #=
 Purpose: store system parameters and other system information 
-Input: t (hopping amplitude), U (interaction strength), μ (chemcial potential), lattice
+Input: t (hopping amplitude), U (interaction strength), N (total number of particles), lattice
 Author: Will Mallah
-Last Updated: 01/25/26
+Last Updated: 05/22/2026
 =#
 struct System{T <: Real}
     t::T
     U::T
-    μ::T
+    N::Int
     lattice::AbstractLattice
 end

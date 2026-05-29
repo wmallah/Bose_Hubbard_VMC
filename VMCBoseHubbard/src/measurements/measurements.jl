@@ -1,3 +1,4 @@
+# ── Gutzwiller ────────────────────────────────────────────────────────────────
 
 function signed_logsumexp(logvals, signs)
     m = maximum(logvals)
@@ -16,9 +17,9 @@ Output: total local energy (kinetic + potential - chemical), kinetic energy, pot
 Author: Will Mallah
 Last Updated: 01/25/26
 =#
-function local_energy(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System, n_max::Int64, grand_canonical::Bool, projective::Bool)
-    log_f = ψ.f                     # shared Gutzwiller coefficient vector
-    t, U, μ = sys.t, sys.U, sys.μ
+function local_energy_gutzwiller(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System, n_max::Int64)
+    log_f = ψ.log_f                     # shared Gutzwiller coefficient vector
+    t, U = sys.t, sys.U
     lattice = sys.lattice
     L = length(n)
 
@@ -58,77 +59,12 @@ function local_energy(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System, n
 
     log_abs_E, sign_E = signed_logsumexp(log_E_kin_contributions, signs)
     E_kin = sign_E * t * exp(log_abs_E)
-
-    # Chemical potential correction
-    N = sum(n)
     
-    if grand_canonical && !projective
-        return E_kin + E_pot - μ*N, E_kin, E_pot
-    else
-        return E_kin + E_pot, E_kin, E_pot
-    end
+    return E_kin + E_pot, E_kin, E_pot
 end
 
 
-#=
-Purpose: estimate the gradient of the energy and metric for use in natural gradient descent optimization
-Input: result from Monte Carlo integration and block_size for autocorrelation blocking approximation
-Output: energy gradient, standard error of energy gradient, and metric
-Author: Will Mallah
-Last Updated: 02/22/26
-=#
-function estimate_energy_gradient_and_metric(result::VMCResults;
-                                             block_size::Int = 200)
-
-    E = result.energies
-    O = result.derivative_log_psi
-
-    if isempty(E) || isempty(O)
-        return NaN, NaN, NaN
-    end
-
-    N = length(E)
-
-    if N != length(O)
-        error("Energy and derivative arrays must have same length.")
-    end
-
-    # ---------- Means ----------
-    mean_E = mean(E)
-    mean_O = mean(O)
-
-    # ---------- Gradient samples ----------
-    # X_i = 2 (O_i E_i - <O> E_i)
-    X = 2 .* (O .* E .- mean_O .* E)
-
-    g = mean(X)
-
-    # ---------- SR metric ----------
-    S = mean(O.^2) - mean_O^2
-
-    # ---------- Blocking error for gradient ----------
-    n_blocks = div(N, block_size)
-
-    # The minimum number of blocks is arbitrary at the moment, but the more blocks you have, the smaller the error
-    if n_blocks < 5
-        error("Not enough blocks for reliable gradient error estimate.")
-    end
-
-    # Truncate some data so that blocks are same size
-    X_trunc = X[1:(n_blocks * block_size)]
-    # Reshape data so each column is one block and each row is an entry in that block
-    blocks = reshape(X_trunc, block_size, n_blocks)
-
-    # Generate vector that contains mean of each respective block as its elements
-    block_means = vec(mean(blocks, dims=1))
-    # Take the variance of these mean values
-    var_blocks = var(block_means)
-
-    # Calculate the Standard Error of the Gradient (SEG)
-    SE_g = sqrt(var_blocks / n_blocks)
-
-    return g, SE_g, S
-end
+# ── Jastrow ───────────────────────────────────────────────────────────────────
 
 function local_potential_energy(n::Vector{Int}, U::Float64)
     Epot = 0.0
@@ -143,7 +79,7 @@ function local_kinetic_energy_jastrow(
     n::Vector{Int},
     t::Float64,
     n_max::Int,
-    ψ::Wavefunction,
+    ψ::JastrowWavefunction,
     lattice
 )
     L = length(n)
@@ -175,7 +111,7 @@ function local_energy_jastrow(
     n::Vector{Int},
     sys::System,
     n_max::Int,
-    ψ::Wavefunction
+    ψ::JastrowWavefunction
 )
     t, U = sys.t, sys.U
     lattice = sys.lattice
@@ -220,7 +156,7 @@ function logpsi_derivatives_realspace(n::Vector{Int})
 end
 
 
-function compute_logpsi_realspace(n::Vector{Int}, ψ::Wavefunction)
+function compute_logpsi_realspace(n::Vector{Int}, ψ::JastrowWavefunction)
     vr = ψ.vr
     L = length(n)
     Rmax = fld(L, 2)
@@ -265,7 +201,7 @@ function compute_delta_logpsi_realspace(
     n::Vector{Int},
     from_site::Int,
     to_site::Int,
-    ψ::Wavefunction
+    ψ::JastrowWavefunction
 )
     # Extract Jastrow potentials from wavefunction struct
     vr = ψ.vr

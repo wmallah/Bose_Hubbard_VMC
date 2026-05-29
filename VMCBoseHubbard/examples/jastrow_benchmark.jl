@@ -5,10 +5,8 @@ include("../src/VMCBoseHubbard.jl")
 using .VMCBoseHubbard
 using FFTW
 
-import .VMCBoseHubbard: MC_integration_Jastrow
 import .VMCBoseHubbard: estimate_tau
-import .VMCBoseHubbard: JastrowParams
-import .VMCBoseHubbard: optimize_jastrow_SR
+import .VMCBoseHubbard: JastrowWavefunction
 
 
 # ============================================================
@@ -121,10 +119,8 @@ function jastrow_vq_q2_for_plot(vr_in::Vector{Float64},
     # Drop q = 0
     q = q_all[2:end]
 
-    # Sign convention:
-    # The optimized real-space Jastrow values are negative in the convention
-    # currently used by the real-space code. For plotting positive v_q q^2,
-    # we flip the FFT output here ONCE.
+    # Code convention: save the raw FFT convention.
+    # If you want a sign flip for a specific comparison, do that in analysis.
     vq = vq_raw_all[2:end]
 
     vq_q2 = vq .* q.^2
@@ -268,74 +264,49 @@ function run_jastrow_benchmark()
     # -----------------------
     # System parameters
     # -----------------------
-    L = 60
-    N_target = 60
-    n_max = N_target
+    L = 4
+    N = 2
+    n_max = N
+
+    # User-controlled hopping parameter.
+    # The code Hamiltonian is interpreted as:
+    #
+    #   H = -t * K + (U/2) * sum_i n_i(n_i - 1)
+    #
+    # Therefore U_over_t_vals below mean U / t in this code convention.
+    t = 1.0
 
     # -----------------------
-    # Convention control
+    # U/t-controlled scan in code convention
     # -----------------------
-    compare_with_capello = true
 
-    # U_over_t_vals = [2.0, 2.4, 2.5, 3.0, 4.0, 6.0]
-    U_over_t_vals = [2.5, 3.0, 4.0, 6.0]
+    # Example scans:
+    # U_vals = [0.0:1.0:10.0;]
+    U_vals = [0.0, 3.0, 3.3, 3.4, 4.0, 6.0]
+    # U_vals = [3.3578]
 
-
-    if compare_with_capello
-        # Capello convention:
-        #   H = -(t_Capello / 2) K + (U / 2) ∑ᵢ nᵢ(nᵢ - 1)
-        #
-        # Our code convention:
-        #   H = -t_code K + (U / 2) ∑ᵢ nᵢ(nᵢ - 1)
-        #
-        # Therefore:
-        #   t_code = t_Capello / 2
-        #
-        # U_over_t_vals are interpreted as U / t_Capello.
-        t_capello = 1.0
-        t_code = t_capello / 2.0
-        U_vals = U_over_t_vals .* t_capello
-
-        convention_label = "Capello"
-    else
-        # Native code convention:
-        #   H = -t K + (U / 2) ∑ᵢ nᵢ(nᵢ - 1)
-        #
-        # U_over_t_vals are interpreted as U / t_code.
-        t_code = 1.0
-        U_vals = U_over_t_vals .* t
-
-        t_capello = NaN
-        convention_label = "code"
-    end
-
-    μ_vals = zeros(length(U_over_t_vals))
+    U_over_t_vals = U_vals ./ t
 
     # Initial REAL-SPACE Jastrow parameters, including R = 0
-    # vr_init = zeros(fld(L, 2) + 1)
-    vr_init = [1.7027316860894737, 0.8387568263618391, 0.46810508982724464, 0.2576489514709566, 0.12620697420709975, 0.05131447988471431, 0.0035099467543947965, -0.03505626048074154, -0.06448041856381605, -0.08741093274701328, -0.10676526218097374, -0.12200076551451595, -0.1333735882714788, -0.13796849569377204, -0.14426778943707477, -0.14878223661639542, -0.15900846790830805, -0.1683063599530637, -0.17333107735993109, -0.1739512728233899, -0.16780669284780914, -0.161321735974031, -0.16318798914609078, -0.16278323072981474, -0.15914932078798238, -0.16746431343151214, -0.16050428528256053, -0.1645451916168923, -0.16478619200550473, -0.16083574450381002, -0.16118632620152615]
+    vr_init = zeros(fld(L, 2) + 1)
 
     dim = "1D"
-    grand_canonical = false
-    projective = false
 
     lattice = Lattice1D(L)
-    ensemble = !grand_canonical ? "C" : "GC"
 
-    dir_base = "../data/$(ensemble)/$(dim)/L$(L)_N$(N_target)/jastrow_realspace"
+    dir_base = "../data/VMC/$(dim)/L$(L)_N$(N)/jastrow_realspace"
     mkpath(dir_base)
 
-    # Summary files indexed by Capello-style U/t, not raw U
-    results_file = "$(dir_base)/VMC_results_vs_UoverT.dat"
-    energy_parts_file = "$(dir_base)/VMC_energy_parts_vs_UoverT.dat"
+    # Summary files indexed by code-convention U/t
+    results_file = "$(dir_base)/VMC_results_vs_U_over_t.dat"
+    energy_parts_file = "$(dir_base)/VMC_energy_parts_vs_U_over_t.dat"
 
     println("results_file = ", results_file)
     println("energy_parts_file = ", energy_parts_file)
-    println("Using Capello convention:")
-    println("    t_capello = ", t_capello)
-    println("    t_code passed to System = ", t_code)
-    println("    U/t scan values = ", U_over_t_vals)
-    println("    corresponding code U values = ", U_vals)
+    println("Using code convention:")
+    println("    Hamiltonian hopping parameter t = ", t)
+    println("    Hamiltonian interaction parameter U = ", U_vals)
+    println("    U/t values = ", U_over_t_vals)
 
     results_dict = load_results_dict(results_file)
     energy_parts_dict = load_energy_parts_dict(energy_parts_file)
@@ -348,63 +319,51 @@ function run_jastrow_benchmark()
     # -----------------------
     # Loop over U/t values
     # -----------------------
-    for (U_over_t, U, μ) in zip(U_over_t_vals, U_vals, μ_vals)
+    for (U_over_t, U) in zip(U_over_t_vals, U_vals)
 
         U_str = format_u_filename(U_over_t)
         U_key = normalize_u_key(U_over_t)
 
         println("\n==================================================")
         println("Optimizing Jastrow parameters")
-        println("Convention = $convention_label")
-        println("Input label U/t = $U_over_t")
-
-        if compare_with_capello
-            println("Capello values: t_Capello = $t_capello, U/t_Capello = $U_over_t")
-            println("Code values: t_code = $t_code, U = $U, raw code U/t_code = $(U / t_code)")
-        else
-            println("Code values: t_code = $t_code, U = $U, raw code U/t_code = $(U / t_code)")
-        end
-
-        println("μ = $μ")
+        println("Input code-convention U/t = $U_over_t")
+        println("Code values: t = $t, U = $U")
         println("==================================================")
 
-        sys = System(t_code, U, μ, lattice)
+        sys = System(t, U, N, lattice)
 
-        params_init = JastrowParams(copy(vr_init))
+        wavefunction_init = JastrowWavefunction(copy(vr_init))
 
         # -----------------------
         # Optimize Jastrow parameters (SR)
         # -----------------------
-        params_opt, history = optimize_jastrow_SR(
+        wavefunction_opt, history = optimize_SR(
             sys,
-            params_init,
-            N_target,
+            wavefunction_init,
             n_max;
-            η = 0.05,
-            num_walkers = 200,
-            num_MC_steps = 20_000,
-            num_equil_steps = 3_000,
-            block_size = 1_000,
-            z = 1.0
+            η = 0.01,
+            num_walkers = 100,
+            num_MC_steps = 5_000,
+            num_equil_steps = 1_000,
+            block_size = 500
         )
 
         # If no optimization desired, use:
-        # params_opt, history = params_init, []
+        # wavefunction_opt, history = wavefunction_init, []
 
-        println("Optimal vr = ", params_opt.vr)
+        println("Optimal vr = ", wavefunction_opt.vr)
 
         # -----------------------
         # Save optimized v(r)
         # -----------------------
-        vr = copy(params_opt.vr)
-        vr_tail_subtracted = vr .- vr[end]
-        Rmax = length(vr_tail_subtracted) - 1
+        vr = copy(wavefunction_opt.vr)
+        Rmax = length(vr) - 1
 
-        vr_file = "$(dir_base)/VMC_vr_vs_r_UoverT$(U_str).dat"
+        vr_file = "$(dir_base)/VMC_vr_vs_r_U_over_t$(U_str).dat"
         open(vr_file, "w") do io
-            println(io, "# r   v_r_tail_subtracted")
+            println(io, "# r   v_r")
             for r in 0:Rmax
-                println(io, "$(r) $(vr_tail_subtracted[r + 1])")
+                println(io, "$(r) $(vr[r + 1])")
             end
         end
 
@@ -420,7 +379,7 @@ function run_jastrow_benchmark()
             subtract_offset = true
         )
 
-        vq_file = "$(dir_base)/VMC_vq_vs_q_UoverT$(U_str).dat"
+        vq_file = "$(dir_base)/VMC_vq_vs_q_U_over_t$(U_str).dat"
         open(vq_file, "w") do io
             println(io, "# q   v_q   v_q_times_q2")
             for i in eachindex(q)
@@ -433,7 +392,7 @@ function run_jastrow_benchmark()
         # -----------------------
         # Optional: save optimization history for this U/t
         # -----------------------
-        history_file = "$(dir_base)/SR_history_UoverT$(U_str).dat"
+        history_file = "$(dir_base)/SR_history_U_over_t$(U_str).dat"
         open(history_file, "w") do io
             println(io, "# iter   energy   " * join(["g_$i" for i in 1:length(vr)], " "))
             for (iter, h) in enumerate(history)
@@ -444,22 +403,19 @@ function run_jastrow_benchmark()
         # --------------------------------
         # Use optimized v(r) as next guess
         # --------------------------------
-        vr_init .= params_opt.vr
+        vr_init .= wavefunction_opt.vr
 
         # -----------------------
         # Final high-statistics evaluation
         # -----------------------
-        final_result = MC_integration_Jastrow(
+        final_result = MC_integration(
             sys,
-            N_target,
-            params_opt,
-            n_max,
-            grand_canonical,
-            projective;
-            num_walkers = 100,
-            num_MC_steps = 5_000,
-            num_equil_steps = 1_000,
-            block_size = 20_000
+            wavefunction_opt,
+            n_max;
+            num_walkers = 200,
+            num_MC_steps = 10_000,
+            num_equil_steps = 2_000,
+            block_size = 40_000
         )
 
         acceptance_ratio = final_result.acceptance_ratio
@@ -476,29 +432,16 @@ function run_jastrow_benchmark()
             (
                 U_over_t = U_over_t,
                 U = U,
-                t_code = t_code,
-                t_capello = t_capello,
-                params = params_opt,
+                t = t,
+                wavefunction = wavefunction_opt,
                 result = final_result
             )
         )
 
-        if grand_canonical
-            hist_file = "$(dir_base)/PN_hist_UoverT$(U_str).dat"
-            open(hist_file, "w") do io
-                println(io, "# N   count")
-                for (i, count) in enumerate(final_result.PN)
-                    if count > 0
-                        println(io, "$(i - 1) $count")
-                    end
-                end
-            end
-        end
-
         # -----------------------
         # Update summary files for this U/t only
         # -----------------------
-        println("Updating summary entries for Capello U/t = ", U_key)
+        println("Updating summary entries for code-convention U/t = ", U_key)
 
         results_dict[U_key] = (
             final_result.mean_energy,
@@ -521,21 +464,11 @@ function run_jastrow_benchmark()
         # -----------------------
         # Save a one-line run summary per U/t
         # -----------------------
-        summary_file = "$(dir_base)/run_summary_UoverT$(U_str).txt"
+        summary_file = "$(dir_base)/run_summary_U_over_t$(U_str).txt"
         open(summary_file, "w") do io
-            println(io, "compare_with_capello = $compare_with_capello")
-            println(io, "convention_label = $convention_label")
             println(io, "input_U_over_t = $U_over_t")
-            println(io, "t_code_passed_to_System = $t_code")
-            println(io, "U_passed_to_System = $U")
-            println(io, "raw_code_U_over_t_code = $(U / t_code)")
-
-            if compare_with_capello
-                println(io, "t_capello = $t_capello")
-                println(io, "Capello_U_over_t = $U_over_t")
-            end
-
-            println(io, "mu = $μ")
+            println(io, "t = $t")
+            println(io, "U = $U")
             println(io, "acceptance_ratio = $(final_result.acceptance_ratio)")
             println(io, "mean_energy = $(final_result.mean_energy)")
             println(io, "sem_energy = $(final_result.sem_energy)")
@@ -547,7 +480,7 @@ function run_jastrow_benchmark()
             println(io, "effective_sample_size = $(length(energies) / (2 * τE))")
         end
 
-        println("Saved all outputs for Capello U/t = $U_over_t")
+        println("Saved all outputs for code-convention U/t = $U_over_t")
     end
 
     return results
