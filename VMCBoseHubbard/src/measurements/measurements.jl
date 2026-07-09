@@ -1,71 +1,12 @@
-# ── Gutzwiller ────────────────────────────────────────────────────────────────
-
-function signed_logsumexp(logvals, signs)
-    m = maximum(logvals)
-    s = 0.0
-    for (lv, sg) in zip(logvals, signs)
-        s += sg * exp(lv - m)
-    end
-    return m + log(abs(s)), sign(s)
-end
-
+# measurements.jl
 
 #=
-Purpose: calculate the local energy
-Input: n (vector of integers describing the system state), ψ (wavefunction struct), sys (system struct), n_max (maximum site occupancy)
-Output: total local energy (kinetic + potential - chemical), kinetic energy, potential energy
+Purpose: calculate local potential energy (trial state independent)
+Input: n (vector of integers describing the system configuration, U (interaction parameter)
+Output: local potential energy for given configuration
 Author: Will Mallah
-Last Updated: 01/25/26
+Last Updated: 06/09/2026
 =#
-function local_energy_gutzwiller(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System, n_max::Int64)
-    log_f = ψ.log_f                     # shared Gutzwiller coefficient vector
-    t, U = sys.t, sys.U
-    lattice = sys.lattice
-    L = length(n)
-
-    log_E_kin_contributions = Float64[]
-    signs = Int[]
-    E_pot = 0.0
-
-    # Potential energy term
-    for i in 1:L
-        E_pot += (U / 2) * n[i] * (n[i] - 1)    # no need for f-dependent terms; cancels in ratio
-    end
-
-    # Kinetic energy term
-    for i in 1:L
-        for j in lattice.neighbors[i]
-            if j > i
-                # hop j → i
-                if hop_possible(n, j, i, n_max)
-                    # log R = log[ f(ni+1) f(nj-1) / ( f(ni) f(nj) ) ]
-                    log_R1 = (log_f[n[i] + 2] + log_f[n[j]]) - (log_f[n[i] + 1] + log_f[n[j] + 1])
-                    log_E_kin = 0.5*log((n[i] + 1) * n[j]) + log_R1
-                    push!(log_E_kin_contributions, log_E_kin)
-                    push!(signs, -1)    # kinetic term is negative
-                end
-
-                # hop i → j
-                if hop_possible(n, i, j, n_max)
-                    # log R = log[ f(nj+1) f(ni-1) / ( f(nj) f(ni) ) ]
-                    log_R2 = (log_f[n[j] + 2] + log_f[n[i]]) - (log_f[n[j] + 1] + log_f[n[i] + 1])
-                    log_E_kin = 0.5 * log((n[j] + 1) * n[i]) + log_R2
-                    push!(log_E_kin_contributions, log_E_kin)
-                    push!(signs, -1)    # kinetic term is negative
-                end
-            end
-        end
-    end
-
-    log_abs_E, sign_E = signed_logsumexp(log_E_kin_contributions, signs)
-    E_kin = sign_E * t * exp(log_abs_E)
-    
-    return E_kin + E_pot, E_kin, E_pot
-end
-
-
-# ── Jastrow ───────────────────────────────────────────────────────────────────
-
 function local_potential_energy(n::Vector{Int}, U::Float64)
     Epot = 0.0
     for ni in n
@@ -75,6 +16,95 @@ function local_potential_energy(n::Vector{Int}, U::Float64)
 end
 
 
+#=
+Purpose: calculate particle correlation function for a given configuration
+Input: n (vector of integers describing the system configuration
+Output: particle correlation function for given configuration
+Author: Will Mallah
+Last Updated: 07/01/2026
+=#
+function local_density_density_correlation(n::Vector{Int})
+    L = length(n)
+    Rmax = fld(L, 2)
+    C = zeros(Float64, Rmax)
+
+    for d in 1:Rmax
+        for i in 1:L
+            j = mod1(i + d, L)
+            C[d] += n[i] * n[j]
+        end
+    end
+
+    return C / L
+end
+
+
+# ── Gutzwiller ────────────────────────────────────────────────────────────────
+#=
+Purpose: calculate local kinetic energy for the Gutzwiller trial state
+Input: n (vector of integers describing the system configuration, t (hopping parameter), n_max (maximum site occupancy), ψ (wavefunction struct), lattice (lattice struct)
+Output: local kinetic energy of given configuration for Gutzwiller trial state
+Author: Will Mallah
+Last Updated: 06/09/2026
+=#
+function local_kinetic_energy_gutzwiller(
+    n::Vector{Int},
+    t::Float64,
+    n_max::Int,
+    ψ::GutzwillerWavefunction,
+    lattice
+)
+    log_f = ψ.log_f
+    L = length(n)
+    E_kin = 0.0
+
+    for i in 1:L
+        for j in lattice.neighbors[i]
+            if j > i
+                # hop j → i
+                if n[j] > 0 && n[i] < n_max
+                    log_R = (log_f[n[i] + 2] + log_f[n[j]]) - (log_f[n[i] + 1] + log_f[n[j] + 1])
+                    E_kin -= t * sqrt((n[i] + 1) * n[j]) * exp(log_R)
+                end
+
+                # hop i → j
+                if n[i] > 0 && n[j] < n_max
+                    log_R = (log_f[n[j] + 2] + log_f[n[i]]) - (log_f[n[j] + 1] + log_f[n[i] + 1])
+                    E_kin -= t * sqrt((n[j] + 1) * n[i]) * exp(log_R)
+                end
+            end
+        end
+    end
+
+    return E_kin
+end
+
+
+#=
+Purpose: calculate total local energy for the Gutzwiller trial state
+Input: n (vector of integers describing the system configuration, ψ (wavefunction struct), sys (system struct), n_max (maximum site occupancy)
+Output: total local energy of given configuration for Gutzwiller trial state
+Author: Will Mallah
+Last Updated: 06/09/2026
+=#
+function local_energy_gutzwiller(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System, n_max::Int64)
+    t, U = sys.t, sys.U
+    lattice = sys.lattice
+
+    E_pot = local_potential_energy(n, U)
+    E_kin = local_kinetic_energy_gutzwiller(n, t, n_max, ψ, lattice)
+    return E_kin + E_pot, E_kin, E_pot
+end
+
+
+# ── Jastrow ───────────────────────────────────────────────────────────────────
+#=
+Purpose: calculate local kinetic energy for the Jastrow trial state
+Input: n (vector of integers describing the system configuration, t (hopping parameter), n_max (maximum site occupancy), ψ (wavefunction struct), lattice (lattice struct)
+Output: local kinetic energy of given configuration for Jastrow trial state
+Author: Will Mallah
+Last Updated: 06/09/2026
+=#
 function local_kinetic_energy_jastrow(
     n::Vector{Int},
     t::Float64,
@@ -107,6 +137,13 @@ function local_kinetic_energy_jastrow(
 end
 
 
+#=
+Purpose: calculate total local energy for the Jastrow trial state
+Input: n (vector of integers describing the system configuration, ψ (wavefunction struct), sys (system struct), n_max (maximum site occupancy)
+Output: total local energy of given configuration for Jastrow trial state
+Author: Will Mallah
+Last Updated: 06/09/2026
+=#
 function local_energy_jastrow(
     n::Vector{Int},
     sys::System,
@@ -122,6 +159,13 @@ function local_energy_jastrow(
 end
 
 
+#=
+Purpose: construct and store Gutzwiller coefficients from Gutzwiller variational parameter (κ)
+Input: κ (Gutzwiller variational parameter), n_max (maximum site occupancy), logfact (pre-generated factorial values)
+Output: GutzwillerWavefunction struct
+Author: Will Mallah
+Last Updated: 06/09/2026
+=#
 function logpsi_derivatives_realspace(n::Vector{Int})
     L = length(n)
     Rmax = fld(L, 2)
@@ -149,54 +193,20 @@ function logpsi_derivatives_realspace(n::Vector{Int})
             SR += n[i] * n[j]
         end
 
-        O[idx] = -prefactor * SR         # CHANGED FROM O[idx] = prefactor * SR
+        O[idx] = -prefactor * SR
     end
 
     return O
 end
 
 
-function compute_logpsi_realspace(n::Vector{Int}, ψ::JastrowWavefunction)
-    vr = ψ.vr
-    L = length(n)
-    Rmax = fld(L, 2)
-
-    @assert length(vr) == Rmax + 1
-
-    logpsi = 0.0
-
-    for idx in 1:(Rmax + 1)
-        R = idx - 1
-
-        # Symmetric real-space Jastrow convention:
-        # logψ = -∑_R c_R v_R ∑_i n_i n_{i+R}
-        #
-        # R = 0 gets c_R = 1/2 from the usual symmetric density-density form.
-        # For even L, R = L/2 also gets c_R = 1/2 because opposite-site
-        # pairs are counted twice in ∑_i n_i n_{i+R}.
-        prefactor = 1.0
-        if R == 0
-            prefactor = 0.5
-        elseif iseven(L) && R == Rmax
-            prefactor= 0.5
-        end
-
-        # The "weights" in the sum we are computing are the Jastrow potentials
-        weight = prefactor * vr[idx]
-
-        SR = 0.0
-        for i in 1:L
-            j = mod1(i + R, L)
-            SR += n[i] * n[j]
-        end
-
-        logpsi -= weight * SR               # CHANGED FROM logpsi += weight * SR
-    end
-
-    return logpsi
-end
-
-
+#=
+Purpose: compute the change in the log of the Jastrow exponetial piece of the wavefunction
+Input: n (system configuration), from_site (hop source site), to_site (hop target site), ψ (wavefunction)
+Output: change in the log of the Jastrow exponetial piece of the wavefunction
+Author: Will Mallah
+Last Updated: 06/09/2026
+=#
 function compute_delta_logpsi_realspace(
     n::Vector{Int},
     from_site::Int,
@@ -274,7 +284,7 @@ function compute_delta_logpsi_realspace(
 
         # Sum Jastrow part of ratio
         ΔSR = (new_local - old_local)
-        Δlogpsi -= weight * ΔSR                 # CHANGED FROM Δlogpsi += weight * ΔSR
+        Δlogpsi -= weight * ΔSR
     end
 
     return Δlogpsi

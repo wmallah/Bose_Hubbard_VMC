@@ -15,6 +15,12 @@ function parse_commandline()
     s = ArgParseSettings()
 
     @add_arg_table s begin
+        "--dimension", "-D"
+            help = "Lattice dimension (1D only currently)"
+            arg_type = Int
+            required = true
+            default = 1
+            dest_name = "D"
 
         "--length", "-L"
             help = "Size of 1D lattice"
@@ -71,10 +77,20 @@ function parse_commandline()
             arg_type = Int
             default = 1234
 
+        "--no-optimization"
+            help = "Do not run optimization"
+            action = :store_false
+
         # ====================================================
         # Optimization parameters
         # ====================================================
 
+        "--max-iters"
+            help = "Maximum number of MC runs in optimization"
+            arg_type = Int
+            default = 100
+            dest_name = "max_iters"
+            
         "--opt-num-walkers"
             help = "Optimization walkers"
             arg_type = Int
@@ -276,6 +292,26 @@ function write_energy_parts(
     end
 end
 
+function write_density_density_correlation(
+    filepath::String,
+    result
+)
+
+    open(filepath, "w") do io
+
+        println(io, "# r   density_density_corr   sem")
+
+        for r in 1:length(result.mean_density_density_corr)
+            println(
+                io,
+                "$(r) " *
+                "$(result.mean_density_density_corr[r]) " *
+                "$(result.sem_density_density_corr[r])"
+            )
+        end
+    end
+end
+
 
 function write_gutzwiller_parameter(
     filepath::String,
@@ -361,6 +397,7 @@ function main()
     # System parameters
     # ========================================================
 
+    D = args["D"]
     L = args["L"]
     N = args["N"]
     U = args["U"]
@@ -383,7 +420,7 @@ function main()
 
     system_dir = joinpath(
         trial_state_dir,
-        "L$(L)_N$(N)"
+        "$(D)D/L$(L)_N$(N)"
     )
 
     interaction_dir = joinpath(
@@ -410,6 +447,11 @@ function main()
     energy_parts_file = joinpath(
         interaction_dir,
         "energy_parts.dat"
+    )
+
+    density_density_corr_file = joinpath(
+        interaction_dir,
+        "density_density_corr.dat"
     )
 
     history_file = joinpath(
@@ -457,19 +499,25 @@ function main()
     wavefunction_opt = nothing
     history = nothing
 
-    @timeit to "Gradient Descent" begin
+    if args["no-optimization"]
+        @timeit to "Gradient Descent" begin
 
-        wavefunction_opt, history = optimize_SR(
-            sys,
-            wavefunction_init,
-            args["n_max"];
+            wavefunction_opt, history = optimize_SR(
+                sys,
+                wavefunction_init,
+                args["n_max"];
 
-            η               = args["eta"],
-            num_walkers     = args["opt_num_walkers"],
-            num_MC_steps    = args["opt_num_MC_steps"],
-            num_equil_steps = args["opt_num_equil_steps"],
-            block_size      = args["opt_block_size"]
-        )
+                η               = args["eta"],
+                num_walkers     = args["opt_num_walkers"],
+                num_MC_steps    = args["opt_num_MC_steps"],
+                num_equil_steps = args["opt_num_equil_steps"],
+                block_size      = args["opt_block_size"],
+                max_iters       = args["max_iters"]
+            )
+        end
+    else
+        wavefunction_opt = wavefunction_init
+        history = []
     end
 
     # ========================================================
@@ -485,6 +533,7 @@ function main()
             wavefunction_opt,
             args["n_max"];
 
+            final_run       = true,
             num_walkers     = args["final_num_walkers"],
             num_MC_steps    = args["final_num_MC_steps"],
             num_equil_steps = args["final_num_equil_steps"],
@@ -512,6 +561,11 @@ function main()
         write_energy_parts(
             energy_parts_file,
             U_over_t,
+            final_result
+        )
+
+        write_density_density_correlation(
+            density_density_corr_file,
             final_result
         )
 
@@ -558,6 +612,5 @@ end
 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-
     main()
 end

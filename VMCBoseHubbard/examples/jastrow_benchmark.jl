@@ -5,7 +5,6 @@ include("../src/VMCBoseHubbard.jl")
 using .VMCBoseHubbard
 using FFTW
 
-import .VMCBoseHubbard: estimate_tau
 import .VMCBoseHubbard: JastrowWavefunction
 
 
@@ -422,10 +421,6 @@ function run_jastrow_benchmark()
         println("Acceptance Ratio: $acceptance_ratio")
 
         energies = final_result.energies
-        τE = estimate_tau(energies)
-
-        println("Estimated autocorrelation time τ = ", τE)
-        println("Effective sample size ≈ ", length(energies) / (2 * τE))
 
         push!(
             results,
@@ -476,8 +471,6 @@ function run_jastrow_benchmark()
             println(io, "sem_kinetic = $(final_result.sem_kinetic)")
             println(io, "mean_potential = $(final_result.mean_potential)")
             println(io, "sem_potential = $(final_result.sem_potential)")
-            println(io, "tau_energy = $(τE)")
-            println(io, "effective_sample_size = $(length(energies) / (2 * τE))")
         end
 
         println("Saved all outputs for code-convention U/t = $U_over_t")

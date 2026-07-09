@@ -7,19 +7,21 @@ Stores all outputs from a VMC run.
   gradient/metric: used directly by optimize_SR.
 =#
 struct VMCResults
-    mean_energy             ::Float64
-    sem_energy              ::Float64
-    mean_kinetic            ::Float64
-    sem_kinetic             ::Float64
-    mean_potential          ::Float64
-    sem_potential           ::Float64
-    gradient                ::Vector{Float64}
-    gradient_standard_error ::Vector{Float64}
-    metric                  ::Matrix{Float64}
-    num_samples             ::Int64
-    acceptance_ratio        ::Float64
-    energies                ::Vector{Float64}    # block means, for tau estimation
-    num_failed_moves        ::Int
+    mean_energy                 ::Float64
+    sem_energy                  ::Float64
+    mean_kinetic                ::Float64
+    sem_kinetic                 ::Float64
+    mean_potential              ::Float64
+    sem_potential               ::Float64
+    mean_density_density_corr   ::Vector{Float64}
+    sem_density_density_corr    ::Vector{Float64}
+    gradient                    ::Vector{Float64}
+    gradient_standard_error     ::Vector{Float64}
+    metric                      ::Matrix{Float64}
+    num_samples                 ::Int64
+    acceptance_ratio            ::Float64
+    energies                    ::Vector{Float64}    # block means, for tau estimation
+    num_failed_moves            ::Int
 end
 
 
@@ -33,17 +35,12 @@ end
 
 
 # ── Walker struct (Jastrow only) ───────────────────────────────────────────────
-#=
-Caches log|ψ| so the Jastrow MC loop only needs to compute the *change*
-in log|ψ| per step rather than recomputing the full sum.
-=#
 mutable struct Walker
     n      ::Vector{Int}
-    logpsi ::Float64
 end
 
 function initialize_walker(n::Vector{Int}, wf::JastrowWavefunction)
-    return Walker(copy(n), compute_logpsi_realspace(n, wf))
+    return Walker(copy(n))
 end
 
 
@@ -64,8 +61,8 @@ end
 
 # ── MC integration: Gutzwiller ─────────────────────────────────────────────────
 #=
-Performs canonical-ensemble VMC for a Gutzwiller wavefunction.
-Measurements begin after num_equil_steps to allow the walkers to thermalise.
+Performs canonical-ensemble MC for a Gutzwiller wavefunction.
+Measurements begin after num_equil_steps to allow the walkers to thermalize.
 Blocking is used throughout to obtain SEMs that account for autocorrelation.
 =#
 function MC_integration(sys::System,
@@ -83,10 +80,12 @@ function MC_integration(sys::System,
 
     # ── Block accumulators ────────────────────────────────────────────────────
     block_sum_E = 0.0;  block_sum_T = 0.0;  block_sum_V = 0.0
+    block_sum_density_density_corr = zeros(Float64, L)
     block_sum_g = 0.0;  block_count = 0
 
     block_means_E  = Float64[];  block_means_T = Float64[]
     block_means_V  = Float64[];  block_gradients = Float64[]
+    block_means_density_density_corr = Float64[]
 
     # Global sums for the SR metric (computed over all post-equilibration samples)
     sum_O = 0.0;  sum_OO = 0.0;  sum_EO = 0.0
@@ -108,11 +107,9 @@ function MC_integration(sys::System,
 
             # If move is physical, calculate acceptance ratio
             if move_valid && from != to
-                # Calculate and store acceptance ratio
-                ratio = acceptance_ratio_Gutzwiller(n, from, to, wf)
+                log_ratio = log_acceptance_ratio_gutzwiller(n, from, to, wf)
 
-                # If acceptance ratio is finite and greater than the random number we generate, accept move
-                if isfinite(ratio) && rand() < ratio
+                if isfinite(log_ratio) && log(rand()) < log_ratio
                     n[from] -= 1;  n[to] += 1
                     num_accepted_moves += 1
                 else
@@ -125,8 +122,10 @@ function MC_integration(sys::System,
             # ── Measurements ─────────────────────────────────────────────────
             if step >= num_equil_steps
                 E, T, V = local_energy_gutzwiller(n, wf, sys, n_max)
+                density_density_corr = local_density_density_correlation(n)
                 if isfinite(E)
                     block_sum_E += E;  block_sum_T += T;  block_sum_V += V
+                    block_sum_density_density_corr .+= density_density_corr
                     block_count += 1
 
                     O = -0.5 * sum(n .^ 2)       # ∂(log|ψ|)/∂κ for Gutzwiller
@@ -138,8 +137,10 @@ function MC_integration(sys::System,
                         push!(block_means_T,   block_sum_T / block_size)
                         push!(block_means_V,   block_sum_V / block_size)
                         push!(block_gradients, block_sum_g / block_size)
+                        push!(block_means_density_density_corr, block_sum_density_density_corr / block_size)
 
                         block_sum_E = block_sum_T = block_sum_V = block_sum_g = 0.0
+                        block_sum_density_density_corr .= 0.0
                         block_count = 0
                     end
                     num_samples += 1
@@ -153,7 +154,7 @@ function MC_integration(sys::System,
 
     if isempty(block_means_E)
         @warn "No valid energy samples collected!"
-        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf,
+        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf, Float64[], Float64[],
                           Float64[], Float64[], zeros(1, 1),
                           0, acceptance_ratio, Float64[], num_failed_moves)
     end
@@ -176,6 +177,7 @@ function MC_integration(sys::System,
         E_mean, E_error,
         mean(block_means_T), std(block_means_T) / sqrt(n_blocks),
         mean(block_means_V), std(block_means_V) / sqrt(n_blocks),
+        mean(block_means_density_density_corr), std(block_means_density_density_corr) / sqrt(n_blocks),
         g, SE_g, S,
         num_samples, acceptance_ratio, block_means_E, num_failed_moves
     )
@@ -184,15 +186,14 @@ end
 
 # ── MC integration: Jastrow ────────────────────────────────────────────────────
 #=
-Performs canonical-ensemble VMC for a real-space Jastrow wavefunction.
-log|ψ| is cached in each Walker and updated incrementally on accepted moves,
-avoiding a full O(L) recomputation every step.
+Performs canonical-ensemble MC for a real-space Jastrow wavefunction.
 Gradient and metric are Nv-dimensional (one component per Jastrow coefficient).
 Only completed blocks contribute to the gradient and metric estimates.
 =#
 function MC_integration(sys::System,
                         wf::JastrowWavefunction,
                         n_max::Int;
+                        final_run::Bool = false,
                         num_walkers     ::Int = 200,
                         num_MC_steps    ::Int = 30000,
                         num_equil_steps ::Int = 5000,
@@ -207,6 +208,7 @@ function MC_integration(sys::System,
 
     # ── Block accumulators ────────────────────────────────────────────────────
     block_sum_E  = 0.0;  block_sum_T  = 0.0;  block_sum_V  = 0.0
+    block_sum_density_density_corr = zeros(Float64, fld(L,2))
     block_sum_O  = zeros(Float64, Nv)
     block_sum_OO = zeros(Float64, Nv, Nv)
     block_sum_EO = zeros(Float64, Nv)
@@ -215,12 +217,14 @@ function MC_integration(sys::System,
     block_means_E  = Float64[];  block_means_T  = Float64[];  block_means_V  = Float64[]
     block_means_O  = Vector{Vector{Float64}}()
     block_means_EO = Vector{Vector{Float64}}()
+    block_means_density_density_corr = Vector{Vector{Float64}}()
 
     # Running totals over completed blocks only (used for point estimates)
     used_sum_E  = 0.0;  used_sum_T  = 0.0;  used_sum_V  = 0.0
     used_sum_O  = zeros(Float64, Nv)
     used_sum_OO = zeros(Float64, Nv, Nv)
     used_sum_EO = zeros(Float64, Nv)
+    used_sum_density_density_corr = zeros(Float64, fld(L,2))
     num_samples_used = 0;  num_accepted_moves = 0;  num_failed_moves = 0
 
     # ── Monte Carlo loop ──────────────────────────────────────────────────────
@@ -244,7 +248,6 @@ function MC_integration(sys::System,
 
                 if isfinite(log_ratio) && log(rand()) < log_ratio
                     n[from]  -= 1;  n[to] += 1
-                    w.logpsi += Δlogpsi
                     num_accepted_moves += 1
                 else
                     num_failed_moves += 1
@@ -256,10 +259,16 @@ function MC_integration(sys::System,
             # ── Measurements ─────────────────────────────────────────────────
             if step > num_equil_steps
                 E, T, V = local_energy_jastrow(w.n, sys, n_max, wf)
+                if final_run
+                    density_density_corr = local_density_density_correlation(w.n)
+                else
+                    density_density_corr = zeros(Float64, fld(L,2))
+                end
                 if isfinite(E)
                     O = logpsi_derivatives_realspace(w.n)
 
                     block_sum_E  += E;  block_sum_T  += T;  block_sum_V  += V
+                    block_sum_density_density_corr  .+= density_density_corr
                     block_sum_O  .+= O
                     block_sum_OO .+= O * O'
                     block_sum_EO .+= E .* O
@@ -269,16 +278,19 @@ function MC_integration(sys::System,
                         push!(block_means_E,  block_sum_E  / block_size)
                         push!(block_means_T,  block_sum_T  / block_size)
                         push!(block_means_V,  block_sum_V  / block_size)
+                        push!(block_means_density_density_corr,  block_sum_density_density_corr  / block_size)
                         push!(block_means_O,  copy(block_sum_O  ./ block_size))
                         push!(block_means_EO, copy(block_sum_EO ./ block_size))
 
                         used_sum_E   += block_sum_E;   used_sum_T   += block_sum_T
                         used_sum_V   += block_sum_V;   used_sum_O   .+= block_sum_O
                         used_sum_OO  .+= block_sum_OO; used_sum_EO  .+= block_sum_EO
+                        used_sum_density_density_corr .+= block_sum_density_density_corr
                         num_samples_used += block_size
 
                         block_sum_E  = block_sum_T = block_sum_V = 0.0
                         block_sum_O .= 0.0;  block_sum_OO .= 0.0;  block_sum_EO .= 0.0
+                        block_sum_density_density_corr .= 0.0
                         block_count  = 0
                     end
                 end
@@ -293,7 +305,7 @@ function MC_integration(sys::System,
 
     if n_blocks == 0 || num_samples_used == 0
         @warn "No valid completed blocks collected!"
-        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf,
+        return VMCResults(Inf, Inf, Inf, Inf, Inf, Inf, Float64[], Float64[],
                           Float64[], Float64[], zeros(Float64, 0, 0),
                           0, acceptance_ratio, Float64[], num_failed_moves)
     end
@@ -304,6 +316,7 @@ function MC_integration(sys::System,
     E_mean  = used_sum_E  / num_samples_used
     T_mean  = used_sum_T  / num_samples_used
     V_mean  = used_sum_V  / num_samples_used
+    density_density_corr_mean = used_sum_density_density_corr / num_samples_used
     O_mean  = used_sum_O  / num_samples_used
     OO_mean = used_sum_OO / num_samples_used
     EO_mean = used_sum_EO / num_samples_used
@@ -312,8 +325,9 @@ function MC_integration(sys::System,
         E_error = std(block_means_E) / sqrt(n_blocks)
         T_error = std(block_means_T) / sqrt(n_blocks)
         V_error = std(block_means_V) / sqrt(n_blocks)
+        density_density_corr_error = std(block_means_density_density_corr) / sqrt(n_blocks)
     else
-        E_error = T_error = V_error = Inf
+        E_error = T_error = V_error = density_density_corr_error = Inf
     end
 
     g     = 2.0 .* (EO_mean .- E_mean .* O_mean)
@@ -337,6 +351,7 @@ function MC_integration(sys::System,
         E_mean, E_error,
         T_mean, T_error,
         V_mean, V_error,
+        density_density_corr_mean, density_density_corr_error,
         g, SE_g, S,
         num_samples_used, acceptance_ratio, block_means_E, num_failed_moves
     )

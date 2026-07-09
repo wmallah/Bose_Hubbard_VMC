@@ -66,9 +66,9 @@ choice of η.
 kwargs
 ------
 η              : learning rate
-λ              : diagonal regularisation of S (Tikhonov)
+λ              : diagonal regularization of S
 max_step       : hard clip on ||Δv||; useful for Gutzwiller to avoid large
-                 steps early in optimisation (set to Inf to disable)
+                 steps early in optimization (set to Inf to disable)
 z_grad         : SNR threshold for a gradient component to be "resolved"
 z_energy       : multiplier on energy SEM for predicted-drop convergence test
 step_tol       : RMS step threshold (reference η) for step-size convergence test

@@ -4,8 +4,6 @@ Pkg.activate("../")
 include("../src/VMCBoseHubbard.jl")
 using .VMCBoseHubbard
 
-import ..VMCBoseHubbard: estimate_tau
-
 # -----------------------
 # System parameters
 # -----------------------
@@ -80,10 +78,6 @@ for U in U_vals
     println("Acceptance Ratio: $acceptance_ratio")
 
     energies = final_result.energies
-    τE = estimate_tau(energies)
-
-    println("Estimated autocorrelation time τ = ", τE)
-    println("Effective sample size ≈ ", length(energies)/(2τE))
 
     push!(results, (U = U, κ = κ_opt, result = final_result))
 end

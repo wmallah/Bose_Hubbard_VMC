@@ -31,3 +31,7 @@ Manifest.toml
 
 # Test scrips
 **/test/**
+
+# Documentation
+**/documentation/**
+!documentation/documentation.pdf
