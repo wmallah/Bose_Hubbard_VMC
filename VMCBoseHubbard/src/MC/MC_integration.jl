@@ -85,7 +85,7 @@ function MC_integration(sys::System,
 
     block_means_E  = Float64[];  block_means_T = Float64[]
     block_means_V  = Float64[];  block_gradients = Float64[]
-    block_means_density_density_corr = Float64[]
+    block_means_density_density_corr = Vector{Vector{Float64}}()
 
     # Global sums for the SR metric (computed over all post-equilibration samples)
     sum_O = 0.0;  sum_OO = 0.0;  sum_EO = 0.0

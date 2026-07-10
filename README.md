@@ -57,6 +57,8 @@ julia pigsfli.jl --help
 
   --seed SEED:                                          Random number generator seed (type: Int64, default: 1234)
 
+  --no-optimization:                                    If set true, no optimization takes place
+
   --opt-num-walkers OPT_NUM_WALKERS:                    Optimization walkers (type: Int64, default:100)
 
   --opt-num-MC-steps OPT_NUM_MC_STEPS:                  Optimization MC steps (type: Int64, default: 5000)
