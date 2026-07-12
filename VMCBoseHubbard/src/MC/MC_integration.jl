@@ -75,12 +75,13 @@ function MC_integration(sys::System,
 
     L = length(sys.lattice.neighbors)
     N = sys.N
+    Rmax = fld(L, 2)
 
     walkers = [ground_state_configuration(N, L, n_max) for _ in 1:num_walkers]
 
     # ── Block accumulators ────────────────────────────────────────────────────
     block_sum_E = 0.0;  block_sum_T = 0.0;  block_sum_V = 0.0
-    block_sum_density_density_corr = zeros(Float64, L)
+    block_sum_density_density_corr = zeros(Float64, Rmax)
     block_sum_g = 0.0;  block_count = 0
 
     block_means_E  = Float64[];  block_means_T = Float64[]
