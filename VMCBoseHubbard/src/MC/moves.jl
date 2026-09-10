@@ -15,8 +15,8 @@ function log_acceptance_ratio_gutzwiller(
 )
     log_ratio =
         2 * (ψ.log_f[n[from_site]]     - ψ.log_f[n[from_site] + 1]) +
-        2 * (ψ.log_f[n[to_site] + 2]   - ψ.log_f[n[to_site] + 1])   +
-        log(n[from_site]) - log(n[to_site] + 1)
+        2 * (ψ.log_f[n[to_site] + 2]   - ψ.log_f[n[to_site] + 1])
+        
 
     return log_ratio
 end

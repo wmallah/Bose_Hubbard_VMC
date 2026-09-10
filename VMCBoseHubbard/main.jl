@@ -57,8 +57,9 @@ function parse_commandline()
 
         "--jastrow-potentials"
             help = "Initial Jastrow parameters"
-            arg_type = String
-            default = ""
+            nargs = '+'
+            arg_type = Float64
+            default = [0.0]
             dest_name = "vr_init"
 
         "--n-max"
@@ -79,7 +80,7 @@ function parse_commandline()
 
         "--no-optimization"
             help = "Do not run optimization"
-            action = :store_false
+            action = :store_true
 
         # ====================================================
         # Optimization parameters
@@ -122,25 +123,25 @@ function parse_commandline()
         "--final-num-walkers"
             help = "Final MC walkers"
             arg_type = Int
-            default = 100
+            default = 200
             dest_name = "final_num_walkers"
 
         "--final-num-MC-steps"
             help = "Final MC steps"
             arg_type = Int
-            default = 5_000
+            default = 10_000
             dest_name = "final_num_MC_steps"
 
         "--final-num-equil-steps"
             help = "Final MC equilibration steps"
             arg_type = Int
-            default = 1_000
+            default = 2_000
             dest_name = "final_num_equil_steps"
 
         "--final-block-size"
             help = "Final MC block size"
             arg_type = Int
-            default = 500
+            default = 1_000
             dest_name = "final_block_size"
 
         # ====================================================
@@ -173,7 +174,7 @@ function parse_commandline()
         error("Please input a non-zero particle number")
     end
 
-    if args["vr_init"] == ""
+    if args["vr_init"] == [0.0]
         args["vr_init"] = zeros(fld(args["L"], 2) + 1)
     end
 
@@ -499,7 +500,7 @@ function main()
     wavefunction_opt = nothing
     history = nothing
 
-    if args["no-optimization"]
+    if !args["no-optimization"]
         @timeit to "Gradient Descent" begin
 
             wavefunction_opt, history = optimize_SR(

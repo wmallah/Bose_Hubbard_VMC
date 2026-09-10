@@ -184,7 +184,6 @@ function optimize_SR(sys::System,
             println("  gradient_zero     = ", gradient_zero)
             println("  energy_unresolved = ", energy_unresolved)
             println("  step_small        = ", step_small)
-            wf = unflatten_params(flatten_params(wf) .- Δv, wf, n_max)
             break
         end
 

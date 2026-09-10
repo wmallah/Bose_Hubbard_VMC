@@ -68,6 +68,7 @@ Blocking is used throughout to obtain SEMs that account for autocorrelation.
 function MC_integration(sys::System,
                         wf::GutzwillerWavefunction,
                         n_max::Int;
+                        final_run       ::Bool = false,
                         num_walkers     ::Int = 200,
                         num_MC_steps    ::Int = 30000,
                         num_equil_steps ::Int = 5000,
@@ -80,12 +81,21 @@ function MC_integration(sys::System,
     walkers = [ground_state_configuration(N, L, n_max) for _ in 1:num_walkers]
 
     # ── Block accumulators ────────────────────────────────────────────────────
-    block_sum_E = 0.0;  block_sum_T = 0.0;  block_sum_V = 0.0
-    block_sum_density_density_corr = zeros(Float64, Rmax)
-    block_sum_g = 0.0;  block_count = 0
+    block_sum_E  = 0.0
+    block_sum_T  = 0.0
+    block_sum_V  = 0.0
+    block_sum_O  = 0.0
+    block_sum_EO = 0.0
 
-    block_means_E  = Float64[];  block_means_T = Float64[]
-    block_means_V  = Float64[];  block_gradients = Float64[]
+    block_sum_density_density_corr = zeros(Float64, Rmax)
+
+    block_count = 0
+
+    block_means_E  = Float64[]
+    block_means_T  = Float64[]
+    block_means_V  = Float64[]
+
+    block_gradients = Float64[]
     block_means_density_density_corr = Vector{Vector{Float64}}()
 
     # Global sums for the SR metric (computed over all post-equilibration samples)
@@ -121,27 +131,55 @@ function MC_integration(sys::System,
             end
 
             # ── Measurements ─────────────────────────────────────────────────
-            if step >= num_equil_steps
+            if step > num_equil_steps
                 E, T, V = local_energy_gutzwiller(n, wf, sys, n_max)
                 density_density_corr = local_density_density_correlation(n)
                 if isfinite(E)
                     block_sum_E += E;  block_sum_T += T;  block_sum_V += V
-                    block_sum_density_density_corr .+= density_density_corr
+                    if final_run
+                        block_sum_density_density_corr .+= density_density_corr
+                    else
+                        density_density_corr = zeros(Float64, fld(L,2))
+                    end
                     block_count += 1
 
-                    O = -0.5 * sum(n .^ 2)       # ∂(log|ψ|)/∂κ for Gutzwiller
-                    block_sum_g += 2 * E * O
-                    sum_O  += O;  sum_OO += O * O;  sum_EO += E * O
+                    O = -0.5 * sum(n .^ 2)
+
+                    block_sum_O  += O
+                    block_sum_EO += E * O
+
+                    sum_O  += O
+                    sum_OO += O * O
+                    sum_EO += E * O
 
                     if block_count == block_size
-                        push!(block_means_E,   block_sum_E / block_size)
-                        push!(block_means_T,   block_sum_T / block_size)
-                        push!(block_means_V,   block_sum_V / block_size)
-                        push!(block_gradients, block_sum_g / block_size)
-                        push!(block_means_density_density_corr, block_sum_density_density_corr / block_size)
+                        E_block  = block_sum_E  / block_size
+                        O_block  = block_sum_O  / block_size
+                        EO_block = block_sum_EO / block_size
 
-                        block_sum_E = block_sum_T = block_sum_V = block_sum_g = 0.0
+                        g_block = 2.0 * (EO_block - E_block * O_block)
+
+                        push!(block_means_E, E_block)
+                        push!(block_means_T, block_sum_T / block_size)
+                        push!(block_means_V, block_sum_V / block_size)
+
+                        push!(block_gradients, g_block)
+
+                        if final_run
+                            push!(
+                                block_means_density_density_corr,
+                                block_sum_density_density_corr / block_size
+                            )
+                        end
+
+                        block_sum_E  = 0.0
+                        block_sum_T  = 0.0
+                        block_sum_V  = 0.0
+                        block_sum_O  = 0.0
+                        block_sum_EO = 0.0
+
                         block_sum_density_density_corr .= 0.0
+
                         block_count = 0
                     end
                     num_samples += 1
@@ -171,14 +209,23 @@ function MC_integration(sys::System,
     g = [2.0 * (EO_mean - E_mean * O_mean)]
     S = [OO_mean - O_mean^2;;]
 
-    g_blocks  = reshape(block_gradients, :, 1) .- mean(block_gradients)
-    SE_g      = vec(std(g_blocks, dims=1)) ./ sqrt(n_blocks)
+    SE_g = [std(block_gradients) / sqrt(n_blocks)]
+
+    if final_run
+        corr_blocks = reduce(hcat, block_means_density_density_corr)
+
+        density_density_corr_mean = vec(mean(corr_blocks, dims=2))
+        density_density_corr_error = vec(std(corr_blocks, dims=2)) ./ sqrt(n_blocks)
+    else
+        density_density_corr_mean = Float64[]
+        density_density_corr_error = Float64[]
+    end
 
     return VMCResults(
         E_mean, E_error,
         mean(block_means_T), std(block_means_T) / sqrt(n_blocks),
         mean(block_means_V), std(block_means_V) / sqrt(n_blocks),
-        mean(block_means_density_density_corr), std(block_means_density_density_corr) / sqrt(n_blocks),
+        density_density_corr_mean, density_density_corr_error,
         g, SE_g, S,
         num_samples, acceptance_ratio, block_means_E, num_failed_moves
     )

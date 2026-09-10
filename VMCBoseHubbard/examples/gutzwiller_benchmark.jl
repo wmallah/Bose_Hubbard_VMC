@@ -8,21 +8,21 @@ using .VMCBoseHubbard
 # System parameters
 # -----------------------
 
-L = 4
-N = 2
+L = 16
+N = 16
 n_max = N
-t = 1.0
+t = 1.0 / 2.0
 κ_init = 1.0
 wavefunction_init = GutzwillerWavefunction(κ_init, n_max)
 
-# U_vals = [i for i in 0.0:1.0:10.0]
-U_vals = [0.0, 3.0, 3.3, 3.4, 4.0, 6.0]
+U_vals = [i for i in 0.0:1.0:8.0]
+# U_vals = [0.0, 3.0, 3.3578, 4.0, 6.0]
 
 dim = "1D"
 
 lattice = Lattice1D(L)
 
-dir_base = "../data/VMC/$(dim)/L$(L)_N$(N)/Gutzwiller"
+dir_base = "../data/VMC/gutzwiller/$(dim)/L$(L)_N$(N)/"
 mkpath(dir_base)
 
 results = []
