@@ -121,13 +121,13 @@ function local_kinetic_energy_jastrow(
                 # hop j -> i gives a_i^† a_j
                 if n[j] > 0 && n[i] < n_max
                     Δlogpsi = compute_delta_logpsi_realspace(n, j, i, ψ)
-                    Ekin -= t * n[j] * exp(Δlogpsi)
+                    Ekin -= t * sqrt((n[i] + 1) * n[j]) * exp(Δlogpsi)
                 end
 
                 # hop i -> j gives a_j^† a_i
                 if n[i] > 0 && n[j] < n_max
                     Δlogpsi = compute_delta_logpsi_realspace(n, i, j, ψ)
-                    Ekin -= t * n[i] * exp(Δlogpsi)
+                    Ekin -= t * sqrt((n[j] + 1) * n[i]) * exp(Δlogpsi)
                 end
             end
         end
