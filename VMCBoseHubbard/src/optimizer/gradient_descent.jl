@@ -18,7 +18,10 @@ function unflatten_params(v::Vector{<:Real}, ::GutzwillerWavefunction, n_max::In
 end
 
 function unflatten_params(v::Vector{<:Real}, ::JastrowWavefunction, ::Int)
-    return JastrowWavefunction(copy(v))
+    # A uniform shift of all v_r changes log(psi) by a canonical-ensemble
+    # constant. Removing it keeps the SR metric from carrying that null mode.
+    v_gauge_fixed = v .- mean(v)
+    return JastrowWavefunction(copy(v_gauge_fixed))
 end
 
 
@@ -52,16 +55,15 @@ update rule:
 where g is the energy gradient and S is the quantum geometric tensor (metric).
 Works for any Wavefunction subtype via flatten_params / unflatten_params dispatch.
 
-Convergence is assessed using a patience counter: the optimizer must satisfy
-one of the convergence criteria for `patience` consecutive iterations before
-stopping. Criteria:
-  1. All gradient components are statistically indistinguishable from zero.
-  2. The predicted energy drop is smaller than the energy resolution AND the
-     RMS parameter step is smaller than step_tol.
+Convergence is assessed over a rolling window. Criteria:
+    1. Only a small fraction of gradient components are statistically resolved.
+    2. The energy is flat over a rolling window AND the applied RMS parameter
+         step is small.
 
-The reference learning rate η_ref is used only for convergence diagnostics
-(predicted drop and RMS step), decoupling the stopping condition from the
-choice of η.
+The gradient fraction avoids an all-components test whose false-positive rate
+gets worse as the number of parameters grows. The energy window uses the
+reported Monte Carlo uncertainties, while the step criterion uses the actual
+possibly clipped update.
 
 kwargs
 ------
@@ -70,10 +72,13 @@ kwargs
 max_step       : hard clip on ||Δv||; useful for Gutzwiller to avoid large
                  steps early in optimization (set to Inf to disable)
 z_grad         : SNR threshold for a gradient component to be "resolved"
-z_energy       : multiplier on energy SEM for predicted-drop convergence test
-step_tol       : RMS step threshold (reference η) for step-size convergence test
+max_resolved_fraction : largest allowed resolved-gradient fraction
+z_energy        : multiplier on the combined SEM energy plateau threshold
+step_atol       : absolute RMS applied-step tolerance
+step_rtol       : relative RMS applied-step tolerance
+energy_window   : number of recent energies used for the plateau test
+required_hits   : qualifying iterations required within the energy window
 min_iters      : minimum iterations before convergence is checked
-patience       : consecutive convergence hits required to stop
 max_iters      : hard iteration cap
 =#
 function optimize_SR(sys::System,
@@ -86,18 +91,28 @@ function optimize_SR(sys::System,
                      num_MC_steps    ::Int     = 30000,
                      num_equil_steps ::Int     = 5000,
                      block_size      ::Int     = 200,
-                     z_grad          ::Float64 = 1.0,
+                     z_grad          ::Float64 = 3.0,
+                     max_resolved_fraction ::Float64 = 0.05,
                      z_energy        ::Float64 = 1.0,
-                     step_tol        ::Float64 = 1e-4,
-                     min_iters       ::Int     = 5,
-                     patience        ::Int     = 2,
+                     step_atol       ::Float64 = 1e-5,
+                     step_rtol       ::Float64 = 1e-3,
+                     energy_window   ::Int     = 5,
+                     required_hits   ::Int     = 4,
+                     min_iters       ::Int     = 10,
                      max_iters       ::Int     = 200)
 
-    history          = NamedTuple[]
-    prev_E           = nothing
-    prev_err         = nothing
-    convergence_hits = 0
-    η_ref            = 0.05     # fixed reference η for convergence diagnostics only
+    history = NamedTuple[]
+    energy_history = Float64[]
+    energy_error_history = Float64[]
+    quality_history = Bool[]
+    prev_E = nothing
+    prev_err = nothing
+
+    energy_window >= 1 || throw(ArgumentError("energy_window must be positive"))
+    1 <= required_hits <= energy_window ||
+        throw(ArgumentError("required_hits must be between 1 and energy_window"))
+    0.0 <= max_resolved_fraction <= 1.0 ||
+        throw(ArgumentError("max_resolved_fraction must be between 0 and 1"))
 
     for iter in 1:max_iters
 
@@ -121,8 +136,8 @@ function optimize_SR(sys::System,
 
         # ── Natural gradient step ─────────────────────────────────────────────
         direction = (S + λ * I) \ g
-        Δv        = η     .* direction
-        Δv_ref    = η_ref .* direction
+        params    = flatten_params(wf)
+        Δv        = η .* direction
 
         # Optional hard clip on step size
         if isfinite(max_step) && norm(Δv) > max_step
@@ -132,8 +147,9 @@ function optimize_SR(sys::System,
         # ── Convergence diagnostics ───────────────────────────────────────────
         snr            = snr_vector(g, SE_g; zero_tol = 1e-16)
         num_resolved   = count(x -> x > z_grad, snr)
-        predicted_drop = dot(g, Δv_ref)
-        rms_step       = norm(Δv_ref) / sqrt(length(Δv_ref))
+        resolved_fraction = num_resolved / length(g)
+        predicted_drop = dot(g, Δv)
+        rms_step       = norm(Δv) / sqrt(length(Δv))
 
         if predicted_drop < 0.0
             @warn "SR step is not a descent direction at iteration $iter." predicted_drop
@@ -146,6 +162,7 @@ function optimize_SR(sys::System,
         println("  Gradient norm    = $(round(norm(g), digits=6))")
         println("  Max SNR          = $(round(maximum(snr), digits=4))")
         println("  Resolved comps   = $num_resolved / $(length(g))")
+        println("  Applied RMS step = $(round(rms_step, digits=8))")
 
         if prev_E !== nothing
             ΔE     = abs(E - prev_E)
@@ -155,34 +172,38 @@ function optimize_SR(sys::System,
         end
 
         push!(history, (
-            wavefunction   = flatten_params(wf),
+            wavefunction   = params,
             energy         = E,
             sem_energy     = err,
             gradient       = copy(g),
             snr            = copy(snr),
             predicted_drop = predicted_drop,
-            rms_step       = rms_step
+            rms_step       = rms_step,
+            resolved_fraction = resolved_fraction
         ))
 
         # ── Convergence test ──────────────────────────────────────────────────
-        gradient_zero     = num_resolved == 0
-        energy_unresolved = predicted_drop <= z_energy * err
-        step_small        = rms_step <= step_tol
-
-        converged_now = iter >= min_iters &&
-                        (gradient_zero || (energy_unresolved && step_small))
+        push!(energy_history, E)
+        push!(energy_error_history, err)
+        first_window = max(1, length(energy_history) - energy_window + 1)
+        recent_energies = @view energy_history[first_window:end]
+        recent_errors = @view energy_error_history[first_window:end]
+        energy_span = maximum(recent_energies) - minimum(recent_energies)
+        energy_resolution = z_energy * sqrt(sum(recent_errors .^ 2))
+        energy_flat = length(recent_energies) == energy_window &&
+                      energy_span <= energy_resolution
+        gradient_unresolved = resolved_fraction <= max_resolved_fraction
+        step_small = rms_step <= step_atol + step_rtol *
+                     max(norm(params) / sqrt(length(params)), 1.0)
+        push!(quality_history, gradient_unresolved && step_small)
+        recent_quality = @view quality_history[first_window:end]
+        converged_now = iter >= min_iters && energy_flat &&
+                        count(recent_quality) >= required_hits
 
         if converged_now
-            convergence_hits += 1
-            println("  Convergence candidate: $convergence_hits / $patience")
-        else
-            convergence_hits = 0
-        end
-
-        if convergence_hits >= patience
             println("Converged at iteration $iter.")
-            println("  gradient_zero     = ", gradient_zero)
-            println("  energy_unresolved = ", energy_unresolved)
+            println("  qualifying iterations = ", count(recent_quality))
+            println("  energy_flat        = ", energy_flat)
             println("  step_small        = ", step_small)
             break
         end

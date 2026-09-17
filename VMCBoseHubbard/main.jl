@@ -111,9 +111,9 @@ function parse_commandline()
             dest_name = "opt_num_equil_steps"
 
         "--opt-block-size"
-            help = "Optimization block size"
+            help = "Completed samples per optimization block (default: 5000; use several sweeps)"
             arg_type = Int
-            default = 500
+            default = 5_000
             dest_name = "opt_block_size"
 
         # ====================================================

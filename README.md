@@ -65,7 +65,7 @@ julia pigsfli.jl --help
 
   --opt-num-equil-steps OPT_NUM_EQUIL_STEPS:            Optimization equilibration steps (type: Int64, default: 1000)
 
-  --opt-block-size OPT_BLOCK_SIZE:                      Optimization block size (type: Int64, default: 500)
+  --opt-block-size OPT_BLOCK_SIZE:                      Completed samples per optimization block (type: Int64, default: 5000)
 
   --final-num-walkers FINAL_NUM_WALKERS:                Final MC walkers (type: Int64, default: 100)
 
@@ -83,3 +83,20 @@ julia pigsfli.jl --help
   
   -h, --help                                            show this help message and exit
 ```
+  
+  ### Optimization convergence
+
+  SR optimization uses Monte Carlo-aware stopping conditions. A run stops only
+  after at least ten iterations when at least four of the latest five iterations
+  have no more than 5% of gradient components with an SNR above 3, the recent
+  five energies form a plateau within their combined SEM, and the applied RMS
+  parameter step is small. These defaults replace the old all-components-at-1-
+  sigma test, whose probability of passing decreases rapidly with the number of
+  Jastrow parameters.
+
+  Optimization blocks should span multiple correlated Monte Carlo sweeps. The
+  CLI default is 5000 completed samples, which is 50 sweeps with the default 100
+  walkers. Increase `--opt-block-size` for larger systems if successive blocks
+  remain strongly correlated. Jastrow parameters are projected to mean zero
+  after every update because a uniform shift is an unobservable normalization
+  constant in the canonical ensemble.

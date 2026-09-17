@@ -344,7 +344,9 @@ function run_jastrow_benchmark()
             num_walkers = 100,
             num_MC_steps = 5_000,
             num_equil_steps = 1_000,
-            block_size = 500
+            # 50 sweeps with the default 100 walkers; longer blocks reduce
+            # autocorrelation bias in the optimization error bars.
+            block_size = 5_000
         )
 
         # If no optimization desired, use:
