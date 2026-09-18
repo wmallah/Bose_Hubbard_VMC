@@ -118,16 +118,18 @@ function local_kinetic_energy_jastrow(
     for i in 1:L
         for j in lattice.neighbors[i]
             if j > i
-                # hop j -> i gives a_i^† a_j
+                # hop j -> i gives a_i^† a_j. The Jastrow ratio here excludes
+                # the condensate state's 1/sqrt(prod(n_i!)) factor; combining
+                # that factor with the bosonic matrix element leaves n[j].
                 if n[j] > 0 && n[i] < n_max
                     Δlogpsi = compute_delta_logpsi_realspace(n, j, i, ψ)
-                    Ekin -= t * sqrt((n[i] + 1) * n[j]) * exp(Δlogpsi)
+                    Ekin -= t * n[j] * exp(Δlogpsi)
                 end
 
                 # hop i -> j gives a_j^† a_i
                 if n[i] > 0 && n[j] < n_max
                     Δlogpsi = compute_delta_logpsi_realspace(n, i, j, ψ)
-                    Ekin -= t * sqrt((n[j] + 1) * n[i]) * exp(Δlogpsi)
+                    Ekin -= t * n[i] * exp(Δlogpsi)
                 end
             end
         end
