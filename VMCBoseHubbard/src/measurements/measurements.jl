@@ -179,9 +179,10 @@ function logpsi_derivatives_realspace(n::Vector{Int})
         # prefactor matches the symmetric Jastrow convention
         # logψ = -∑_R prefactor(R) * v_R * ∑_i n_i n_{i+R}
         #
-        # R = 0 gets 1/2 from the usual symmetric density-density form.
-        # For even L, R = L/2 also gets 1/2 because each opposite-site pair
-        # appears twice in ∑_i n_i n_{i+R}.
+        # R = 0 gets 1/2 from the original symmetric
+        # density-density factor 1/2; S_0 itself is NOT double-counted.
+        # For even L, R = L/2 also gets 1/2 because S_{L/2}
+        # contains each opposite-site pair twice.
         prefactor = 1.0
         if R == 0
             prefactor = 0.5
@@ -241,9 +242,10 @@ function compute_delta_logpsi_realspace(
         # Symmetric real-space Jastrow convention:
         # logψ = -∑_R c_R v_R ∑_i n_i n_{i+R}
         #
-        # R = 0 gets c_R = 1/2 from the usual symmetric density-density form.
-        # For even L, R = L/2 also gets c_R = 1/2 because opposite-site
-        # pairs are counted twice in ∑_i n_i n_{i+R}.
+        # R = 0 gets 1/2 from the original symmetric
+        # density-density factor 1/2; S_0 itself is NOT double-counted.
+        # For even L, R = L/2 also gets 1/2 because S_{L/2}
+        # contains each opposite-site pair twice.
         prefactor = 1.0
         if R == 0
             prefactor = 0.5

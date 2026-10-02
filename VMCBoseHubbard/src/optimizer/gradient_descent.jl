@@ -18,10 +18,7 @@ function unflatten_params(v::Vector{<:Real}, ::GutzwillerWavefunction, n_max::In
 end
 
 function unflatten_params(v::Vector{<:Real}, ::JastrowWavefunction, ::Int)
-    # A uniform shift of all v_r changes log(psi) by a canonical-ensemble
-    # constant. Removing it keeps the SR metric from carrying that null mode.
-    v_gauge_fixed = v .- mean(v)
-    return JastrowWavefunction(copy(v_gauge_fixed))
+    return JastrowWavefunction(v)
 end
 
 

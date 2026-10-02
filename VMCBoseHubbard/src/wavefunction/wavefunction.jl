@@ -32,5 +32,12 @@ end
 
 # Store real-space Jastrow variational parameters/Jastrow potentials (v_r)
 struct JastrowWavefunction{T <: Real} <: Wavefunction
-    vr::Vector{T}    # fld(L, 2) + 1 real-space coefficients (translational invariance)
+    vr::Vector{T}    # fld(L, 2) + 1 real-space coefficients
+end
+
+# Constructor with gauge fixing:
+# set the largest-separation Jastrow potential to zero.
+function JastrowWavefunction(vr::Vector{T}) where {T <: Real}
+    vr_gauge_fixed = vr .- vr[end]
+    return JastrowWavefunction{T}(copy(vr_gauge_fixed))
 end
