@@ -16,17 +16,28 @@ function parse_commandline()
 
     @add_arg_table s begin
         "--dimension", "-D"
-            help = "Lattice dimension (1D only currently)"
+            help = "Lattice dimension (1 or 2)"
             arg_type = Int
             required = true
-            default = 1
             dest_name = "D"
 
         "--length", "-L"
-            help = "Size of 1D lattice"
+            help = "Number of sites for a 1D lattice"
             arg_type = Int
-            required = true
+            default = nothing
             dest_name = "L"
+
+        "--length-x"
+            help = "Number of sites along x for a 2D lattice"
+            arg_type = Int
+            default = nothing
+            dest_name = "Lx"
+
+        "--length-y"
+            help = "Number of sites along y for a 2D lattice"
+            arg_type = Int
+            default = nothing
+            dest_name = "Ly"
 
         "--particle-number", "-N"
             help = "Total number of particles"
@@ -166,16 +177,27 @@ function parse_commandline()
 
     Random.seed!(args["seed"])
 
-    if args["L"] <= 1
-        error("Please input a system size larger than one")
+    D = args["D"]
+    if D == 1
+        args["L"] === nothing && error("Please provide --length for a 1D lattice")
+        args["Lx"] === nothing && args["Ly"] === nothing ||
+            error("--length-x and --length-y are only valid for a 2D lattice")
+        args["L"] > 1 || error("Please input a 1D lattice length larger than one")
+        args["M"] = args["L"]
+    elseif D == 2
+        args["L"] === nothing ||
+            error("--length is for 1D; provide --length-x and --length-y for a 2D lattice")
+        args["Lx"] === nothing && error("Please provide --length-x for a 2D lattice")
+        args["Ly"] === nothing && error("Please provide --length-y for a 2D lattice")
+        args["Lx"] > 1 || error("Please input an x dimension larger than one")
+        args["Ly"] > 1 || error("Please input a y dimension larger than one")
+        args["M"] = args["Lx"] * args["Ly"]
+    else
+        error("Unsupported lattice dimension $D. Valid dimensions: 1, 2.")
     end
 
     if args["N"] == 0
         error("Please input a non-zero particle number")
-    end
-
-    if args["vr_init"] == [0.0]
-        args["vr_init"] = zeros(fld(args["L"], 2) + 1)
     end
 
     if args["n_max"] == -1
@@ -210,7 +232,14 @@ function write_parameters_file(
         println(io, "# System Parameters")
         println(io, "# ==================================================")
 
-        println(io, "L $(args["L"])")
+        println(io, "dimension $(args["D"])")
+        println(io, "M $(args["M"])")
+        if args["D"] == 1
+            println(io, "L $(args["L"])")
+        else
+            println(io, "Lx $(args["Lx"])")
+            println(io, "Ly $(args["Ly"])")
+        end
         println(io, "N $(args["N"])")
         println(io, "U $(args["U"])")
         println(io, "t $(args["t"])")
@@ -295,19 +324,21 @@ end
 
 function write_density_density_correlation(
     filepath::String,
-    result
+    result,
+    lattice::VMCBoseHubbard.AbstractLattice
 )
 
+    shell_distances = lattice_shell_distances(lattice)[2:end]
     open(filepath, "w") do io
 
-        println(io, "# r   density_density_corr   sem")
+        println(io, "# distance   density_density_corr   sem")
 
-        for r in 1:length(result.mean_density_density_corr)
+        for shell in eachindex(result.mean_density_density_corr)
             println(
                 io,
-                "$(r) " *
-                "$(result.mean_density_density_corr[r]) " *
-                "$(result.sem_density_density_corr[r])"
+                "$(shell_distances[shell]) " *
+                "$(result.mean_density_density_corr[shell]) " *
+                "$(result.sem_density_density_corr[shell])"
             )
         end
     end
@@ -400,6 +431,8 @@ function main()
 
     D = args["D"]
     L = args["L"]
+    Lx = args["Lx"]
+    Ly = args["Ly"]
     N = args["N"]
     U = args["U"]
     t = args["t"]
@@ -407,6 +440,15 @@ function main()
     U_over_t = U / t
 
     trial_state = args["trial-state"]
+    lattice = if D == 1
+        Lattice1D(L)
+    else
+        Lattice2D(Lx, Ly)
+    end
+
+    if args["vr_init"] == [0.0]
+        args["vr_init"] = zeros(length(lattice_shell_distances(lattice)))
+    end
 
     # ========================================================
     # Output directory structure
@@ -421,7 +463,7 @@ function main()
 
     system_dir = joinpath(
         trial_state_dir,
-        "$(D)D/L$(L)_N$(N)"
+        D == 1 ? "1D/L$(L)_N$(N)" : "2D/Lx$(Lx)_Ly$(Ly)_N$(N)"
     )
 
     interaction_dir = joinpath(
@@ -464,8 +506,6 @@ function main()
     # ========================================================
     # Construct system
     # ========================================================
-
-    lattice = Lattice1D(L)
 
     sys = System(t, U, N, lattice)
 
@@ -568,7 +608,8 @@ function main()
 
         write_density_density_correlation(
             density_density_corr_file,
-            final_result
+            final_result,
+            lattice
         )
 
         if wavefunction_opt isa JastrowWavefunction

@@ -22,20 +22,22 @@ function log_acceptance_ratio_gutzwiller(
 end
 
 #=
-Purpose: calculate the log of the acceptance probability for the Jastrow trial state
-Input: n (system configuration), from (hop source site), to (hop target site), ψ (wavefunction)
+Purpose: calculate the log of the acceptance probability for a Jastrow particle hop.
+Input: n (system configuration), from_site (hop source site), to_site (hop target site),
+       ψ (Jastrow wavefunction), shell_indices (matrix of lattice shell indices)
 Output: log of the acceptance ratio between two nearest neighbor hop-connected system configurations for the Jastrow trial state
 Author: Will Mallah
-Last Updated: 06/09/2026
+Last Updated: 10/03/2026
 =#
-function log_acceptance_ratio_realspace_jastrow(
+function log_acceptance_ratio_jastrow(
     n::Vector{Int},
     from_site::Int,
     to_site::Int,
-    ψ::Wavefunction
+    ψ::JastrowWavefunction,
+    shell_indices::Matrix{Int}
 )
 
-    Δlogpsi = compute_delta_logpsi_realspace(n, from_site, to_site, ψ)
+    Δlogpsi = compute_delta_logpsi_jastrow(n, from_site, to_site, ψ, shell_indices)
     log_ratio = 2.0 * Δlogpsi + log(n[from_site]) - log(n[to_site] + 1)
 
     return log_ratio

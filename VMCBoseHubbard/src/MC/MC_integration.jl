@@ -1,11 +1,11 @@
 # MC_integration.jl
 
 # ── Results struct ─────────────────────────────────────────────────────────────
-#=
+"""
 Stores all outputs from a VMC run.
   energies: vector of per-block mean energies, used for autocorrelation diagnostics.
   gradient/metric: used directly by optimize_SR.
-=#
+"""
 struct VMCResults
     mean_energy                 ::Float64
     sem_energy                  ::Float64
@@ -20,7 +20,7 @@ struct VMCResults
     metric                      ::Matrix{Float64}
     num_samples                 ::Int64
     acceptance_ratio            ::Float64
-    energies                    ::Vector{Float64}    # block means, for tau estimation
+    energies                    ::Vector{Float64}
     num_failed_moves            ::Int
 end
 
@@ -34,6 +34,7 @@ function check_and_warn_walker(n::Vector{Int}, n_max::Int)
 end
 
 
+# Seems like this is unnecessary [CHECK]
 # ── Walker struct (Jastrow only) ───────────────────────────────────────────────
 mutable struct Walker
     n      ::Vector{Int}
@@ -45,14 +46,14 @@ end
 
 
 # ── Shared helper ──────────────────────────────────────────────────────────────
-#=
-Returns a near-uniform configuration with N particles on L sites,
+"""
+Returns a near-uniform configuration with N particles on M sites,
 with any remainder particles placed on the first sites.
-=#
-function ground_state_configuration(N::Int, L::Int, n_max::Int)
-    N > L * n_max && error("Impossible: N > L * n_max")
-    n = fill(div(N, L), L)
-    for i in 1:(N % L)
+"""
+function ground_state_configuration(N::Int, M::Int, n_max::Int)
+    N > M * n_max && error("Impossible: N > M * n_max")
+    n = fill(div(N, M), M)
+    for i in 1:(N % M)
         n[i] += 1
     end
     return n
@@ -60,11 +61,11 @@ end
 
 
 # ── MC integration: Gutzwiller ─────────────────────────────────────────────────
-#=
+"""
 Performs canonical-ensemble MC for a Gutzwiller wavefunction.
 Measurements begin after num_equil_steps to allow the walkers to thermalize.
 Blocking is used throughout to obtain SEMs that account for autocorrelation.
-=#
+"""
 function MC_integration(sys::System,
                         wf::GutzwillerWavefunction,
                         n_max::Int;
@@ -74,11 +75,13 @@ function MC_integration(sys::System,
                         num_equil_steps ::Int = 5000,
                         block_size      ::Int = 200)
 
-    L = length(sys.lattice.neighbors)
+    M = length(sys.lattice.neighbors)
     N = sys.N
-    Rmax = fld(L, 2)
+    shell_indices = lattice_shell_indices(sys.lattice)
+    shell_pair_counts = _nonzero_shell_pair_counts(shell_indices)
+    correlation_shell_count = length(shell_pair_counts)
 
-    walkers = [ground_state_configuration(N, L, n_max) for _ in 1:num_walkers]
+    walkers = [ground_state_configuration(N, M, n_max) for _ in 1:num_walkers]
 
     # ── Block accumulators ────────────────────────────────────────────────────
     block_sum_E  = 0.0
@@ -87,7 +90,7 @@ function MC_integration(sys::System,
     block_sum_O  = 0.0
     block_sum_EO = 0.0
 
-    block_sum_density_density_corr = zeros(Float64, Rmax)
+    block_sum_density_density_corr = zeros(Float64, correlation_shell_count)
 
     block_count = 0
 
@@ -107,8 +110,8 @@ function MC_integration(sys::System,
         for i in 1:num_walkers
             n = walkers[i]
 
-            # Determine the source site by randomly selecting number 1 to L
-            from = rand(1:L)
+            # Determine the source site by randomly selecting number 1 to M
+            from = rand(1:M)
 
             # Determine reciever site by randomly selecting from neighbors of source site
             to = rand(sys.lattice.neighbors[from])
@@ -133,17 +136,18 @@ function MC_integration(sys::System,
             # ── Measurements ─────────────────────────────────────────────────
             if step > num_equil_steps
                 E, T, V = local_energy_gutzwiller(n, wf, sys, n_max)
-                density_density_corr = local_density_density_correlation(n)
                 if isfinite(E)
                     block_sum_E += E;  block_sum_T += T;  block_sum_V += V
                     if final_run
+                        density_density_corr =
+                            _local_density_density_correlation(n, shell_indices, shell_pair_counts)
                         block_sum_density_density_corr .+= density_density_corr
                     else
-                        density_density_corr = zeros(Float64, fld(L,2))
+                        density_density_corr = zeros(Float64, correlation_shell_count)
                     end
                     block_count += 1
 
-                    O = -0.5 * sum(n .^ 2)
+                    O = logpsi_derivative_gutzwiller(n)
 
                     block_sum_O  += O
                     block_sum_EO += E * O
@@ -233,11 +237,11 @@ end
 
 
 # ── MC integration: Jastrow ────────────────────────────────────────────────────
-#=
+"""
 Performs canonical-ensemble MC for a real-space Jastrow wavefunction.
 Gradient and metric are Nv-dimensional (one component per Jastrow coefficient).
 Only completed blocks contribute to the gradient and metric estimates.
-=#
+"""
 function MC_integration(sys::System,
                         wf::JastrowWavefunction,
                         n_max::Int;
@@ -247,16 +251,22 @@ function MC_integration(sys::System,
                         num_equil_steps ::Int = 5000,
                         block_size      ::Int = 200)
 
-    L  = length(sys.lattice.neighbors)
+    M  = length(sys.lattice.neighbors)
     N  = sys.N
+    shell_indices = lattice_shell_indices(sys.lattice)
+    shell_pair_counts = _nonzero_shell_pair_counts(shell_indices)
+    correlation_shell_count = length(shell_pair_counts)
     Nv = length(wf.vr)
+    shell_count = maximum(shell_indices)
+    Nv == shell_count ||
+        throw(DimensionMismatch("Jastrow parameter count must match the lattice distance-shell count"))
 
-    walkers = [initialize_walker(ground_state_configuration(N, L, n_max), wf)
+    walkers = [initialize_walker(ground_state_configuration(N, M, n_max), wf)
                for _ in 1:num_walkers]
 
     # ── Block accumulators ────────────────────────────────────────────────────
     block_sum_E  = 0.0;  block_sum_T  = 0.0;  block_sum_V  = 0.0
-    block_sum_density_density_corr = zeros(Float64, fld(L,2))
+    block_sum_density_density_corr = zeros(Float64, correlation_shell_count)
     block_sum_O  = zeros(Float64, Nv)
     block_sum_OO = zeros(Float64, Nv, Nv)
     block_sum_EO = zeros(Float64, Nv)
@@ -272,7 +282,7 @@ function MC_integration(sys::System,
     used_sum_O  = zeros(Float64, Nv)
     used_sum_OO = zeros(Float64, Nv, Nv)
     used_sum_EO = zeros(Float64, Nv)
-    used_sum_density_density_corr = zeros(Float64, fld(L,2))
+    used_sum_density_density_corr = zeros(Float64, correlation_shell_count)
     num_samples_used = 0;  num_accepted_moves = 0;  num_failed_moves = 0
 
     # ── Monte Carlo loop ──────────────────────────────────────────────────────
@@ -280,8 +290,8 @@ function MC_integration(sys::System,
         for w in walkers
             n    = w.n
 
-            # Determine the source site by randomly selecting number 1 to L
-            from = rand(1:L)
+            # Determine the source site by randomly selecting number 1 to M
+            from = rand(1:M)
 
             # Determine reciever site by randomly selecting from neighbors of source site
             to = rand(sys.lattice.neighbors[from])
@@ -291,8 +301,8 @@ function MC_integration(sys::System,
 
             # If move is physical, calculate acceptance ratio
             if move_valid && from != to
-                Δlogpsi = compute_delta_logpsi_realspace(n, from, to, wf)
-                log_ratio = log_acceptance_ratio_realspace_jastrow(n, from, to, wf)
+                log_ratio =
+                    log_acceptance_ratio_jastrow(n, from, to, wf, shell_indices)
 
                 if isfinite(log_ratio) && log(rand()) < log_ratio
                     n[from]  -= 1;  n[to] += 1
@@ -306,14 +316,15 @@ function MC_integration(sys::System,
 
             # ── Measurements ─────────────────────────────────────────────────
             if step > num_equil_steps
-                E, T, V = local_energy_jastrow(w.n, sys, n_max, wf)
+                E, T, V = local_energy_jastrow(w.n, sys, n_max, wf, shell_indices)
                 if final_run
-                    density_density_corr = local_density_density_correlation(w.n)
+                    density_density_corr =
+                        _local_density_density_correlation(w.n, shell_indices, shell_pair_counts)
                 else
-                    density_density_corr = zeros(Float64, fld(L,2))
+                    density_density_corr = zeros(Float64, correlation_shell_count)
                 end
                 if isfinite(E)
-                    O = logpsi_derivatives_realspace(w.n)
+                    O = _logpsi_derivatives_jastrow(w.n, shell_indices)
 
                     block_sum_E  += E;  block_sum_T  += T;  block_sum_V  += V
                     block_sum_density_density_corr  .+= density_density_corr
