@@ -27,13 +27,13 @@ function parse_commandline()
             default = nothing
             dest_name = "L"
 
-        "--length-x"
+        "--length-x", "-x"
             help = "Number of sites along x for a 2D lattice"
             arg_type = Int
             default = nothing
             dest_name = "Lx"
 
-        "--length-y"
+        "--length-y", "-y"
             help = "Number of sites along y for a 2D lattice"
             arg_type = Int
             default = nothing
@@ -166,6 +166,10 @@ function parse_commandline()
 
         "--save-history"
             help = "Save SR optimization history"
+            action = :store_true
+
+        "--save-walk-history"
+            help = "Save walker 1's configuration at every final MC step"
             action = :store_true
 
         "--skip-timing"
@@ -503,6 +507,11 @@ function main()
         "sr_history.dat"
     )
 
+    walk_history_file = joinpath(
+        interaction_dir,
+        "walk_history.csv"
+    )
+
     # ========================================================
     # Construct system
     # ========================================================
@@ -570,7 +579,24 @@ function main()
 
     @timeit to "High Statistics MC" begin
 
-        final_result = MC_integration(
+        configuration_metadata = Dict(
+            "dimension" => string(D),
+            "N" => string(N),
+            "U" => string(U),
+            "t" => string(t),
+            "U_over_t" => string(U_over_t),
+            "n_max" => string(args["n_max"]),
+            "trial_state" => trial_state,
+            "seed" => string(args["seed"])
+        )
+        if D == 1
+            configuration_metadata["L"] = string(L)
+        else
+            configuration_metadata["Lx"] = string(Lx)
+            configuration_metadata["Ly"] = string(Ly)
+        end
+
+        run_final_mc = history_io -> MC_integration(
             sys,
             wavefunction_opt,
             args["n_max"];
@@ -579,8 +605,18 @@ function main()
             num_walkers     = args["final_num_walkers"],
             num_MC_steps    = args["final_num_MC_steps"],
             num_equil_steps = args["final_num_equil_steps"],
-            block_size      = args["final_block_size"]
+            block_size      = args["final_block_size"],
+            configuration_history = history_io,
+            configuration_metadata = configuration_metadata
         )
+
+        if args["save-walk-history"]
+            open(walk_history_file, "w") do io
+                final_result = run_final_mc(io)
+            end
+        else
+            final_result = run_final_mc(nothing)
+        end
     end
 
     # ========================================================

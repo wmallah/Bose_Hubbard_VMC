@@ -79,6 +79,8 @@ julia pigsfli.jl --help
 
   --save-history:                                       Save SR optimization history
 
+  --save-walk-history:                                  Save walker 1's final-run configuration history
+
   --skip-timing:                                        Disable timing output
   
   -h, --help                                            show this help message and exit
@@ -100,3 +102,25 @@ julia pigsfli.jl --help
   remain strongly correlated. Jastrow parameters are projected to mean zero
   after every update because a uniform shift is an unobservable normalization
   constant in the canonical ensemble.
+
+### Visualizing a random walk
+
+Pass `--save-walk-history` to save walker 1's configuration, beginning with its
+initial state and then once per final MC step (including equilibration), as
+`walk_history.csv` beside the other run outputs. Saving is disabled by default.
+The file starts with system-parameter metadata comments, then has a `step`
+column followed by one occupation column per site. This metadata is also shown
+as a title above the animation.
+
+With Python, NumPy, Matplotlib, and Pillow installed, create the occupation plot
+GIF in the same directory:
+
+```bash
+python3 VMCBoseHubbard/visualize_walk.py path/to/walk_history.csv
+```
+
+The script reads `parameters.dat` from the same directory to determine whether
+to display a 1D or 2D lattice. Use `--style bosons` to show each boson as a
+circle hopping between lattice sites; that mode saves
+`walk_history_bosons.gif` by default. Choose a different destination with
+`--output`.

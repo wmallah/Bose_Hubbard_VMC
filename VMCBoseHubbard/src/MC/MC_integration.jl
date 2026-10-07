@@ -60,6 +60,22 @@ function ground_state_configuration(N::Int, M::Int, n_max::Int)
 end
 
 
+function write_configuration_history_header(
+    io::IO,
+    num_sites::Int,
+    metadata::AbstractDict{String,String}
+)
+    for (key, value) in sort!(collect(metadata); by = first)
+        println(io, "# ", key, "=", value)
+    end
+    println(io, join(["step"; ["site_$i" for i in 1:num_sites]], ","))
+end
+
+function write_configuration_snapshot(io::IO, step::Int, n::Vector{Int})
+    println(io, step, ",", join(n, ","))
+end
+
+
 # ── MC integration: Gutzwiller ─────────────────────────────────────────────────
 """
 Performs canonical-ensemble MC for a Gutzwiller wavefunction.
@@ -73,7 +89,9 @@ function MC_integration(sys::System,
                         num_walkers     ::Int = 200,
                         num_MC_steps    ::Int = 30000,
                         num_equil_steps ::Int = 5000,
-                        block_size      ::Int = 200)
+                        block_size      ::Int = 200,
+                        configuration_history::Union{Nothing,IO} = nothing,
+                        configuration_metadata::AbstractDict{String,String} = Dict{String,String}())
 
     M = length(sys.lattice.neighbors)
     N = sys.N
@@ -81,7 +99,15 @@ function MC_integration(sys::System,
     shell_pair_counts = _nonzero_shell_pair_counts(shell_indices)
     correlation_shell_count = length(shell_pair_counts)
 
+    configuration_history !== nothing && num_walkers < 1 &&
+        throw(ArgumentError("Configuration history requires at least one walker"))
     walkers = [ground_state_configuration(N, M, n_max) for _ in 1:num_walkers]
+    if configuration_history !== nothing
+        write_configuration_history_header(
+            configuration_history, M, configuration_metadata
+        )
+        write_configuration_snapshot(configuration_history, 0, walkers[1])
+    end
 
     # ── Block accumulators ────────────────────────────────────────────────────
     block_sum_E  = 0.0
@@ -131,6 +157,10 @@ function MC_integration(sys::System,
                 end
             else
                 num_failed_moves += 1
+            end
+
+            if configuration_history !== nothing && i == 1
+                write_configuration_snapshot(configuration_history, step, n)
             end
 
             # ── Measurements ─────────────────────────────────────────────────
@@ -249,7 +279,9 @@ function MC_integration(sys::System,
                         num_walkers     ::Int = 200,
                         num_MC_steps    ::Int = 30000,
                         num_equil_steps ::Int = 5000,
-                        block_size      ::Int = 200)
+                        block_size      ::Int = 200,
+                        configuration_history::Union{Nothing,IO} = nothing,
+                        configuration_metadata::AbstractDict{String,String} = Dict{String,String}())
 
     M  = length(sys.lattice.neighbors)
     N  = sys.N
@@ -261,8 +293,16 @@ function MC_integration(sys::System,
     Nv == shell_count ||
         throw(DimensionMismatch("Jastrow parameter count must match the lattice distance-shell count"))
 
+    configuration_history !== nothing && num_walkers < 1 &&
+        throw(ArgumentError("Configuration history requires at least one walker"))
     walkers = [initialize_walker(ground_state_configuration(N, M, n_max), wf)
                for _ in 1:num_walkers]
+    if configuration_history !== nothing
+        write_configuration_history_header(
+            configuration_history, M, configuration_metadata
+        )
+        write_configuration_snapshot(configuration_history, 0, walkers[1].n)
+    end
 
     # ── Block accumulators ────────────────────────────────────────────────────
     block_sum_E  = 0.0;  block_sum_T  = 0.0;  block_sum_V  = 0.0
@@ -287,7 +327,7 @@ function MC_integration(sys::System,
 
     # ── Monte Carlo loop ──────────────────────────────────────────────────────
     @showprogress enabled=true "Running Jastrow VMC..." for step in 1:num_MC_steps
-        for w in walkers
+        for (walker_index, w) in enumerate(walkers)
             n    = w.n
 
             # Determine the source site by randomly selecting number 1 to M
@@ -312,6 +352,10 @@ function MC_integration(sys::System,
                 end
             else
                 num_failed_moves += 1
+            end
+
+            if configuration_history !== nothing && walker_index == 1
+                write_configuration_snapshot(configuration_history, step, n)
             end
 
             # ── Measurements ─────────────────────────────────────────────────
