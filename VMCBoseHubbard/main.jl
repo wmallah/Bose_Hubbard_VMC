@@ -263,6 +263,7 @@ function write_parameters_file(
         println(io, "opt_num_MC_steps $(args["opt_num_MC_steps"])")
         println(io, "opt_num_equil_steps $(args["opt_num_equil_steps"])")
         println(io, "opt_block_size $(args["opt_block_size"])")
+        println(io, "max_iters $(args["max_iters"])")
 
         println(io)
 
@@ -409,6 +410,22 @@ function write_sr_history(
 end
 
 
+function write_optimization_summary(filepath::String, summary)
+    open(filepath, "w") do io
+        println(io, "# VMC optimization convergence summary")
+        for key in keys(summary)
+            println(io, "$(key) $(getproperty(summary, key))")
+        end
+    end
+end
+
+function print_optimization_summary(summary)
+    println("\nVMC optimization summary:")
+    for key in keys(summary)
+        println("  $(key) = $(getproperty(summary, key))")
+    end
+end
+
 # ============================================================
 # Main
 # ============================================================
@@ -507,6 +524,11 @@ function main()
         "sr_history.dat"
     )
 
+    optimization_summary_file = joinpath(
+        interaction_dir,
+        "optimization_summary.dat"
+    )
+
     walk_history_file = joinpath(
         interaction_dir,
         "walk_history.csv"
@@ -571,8 +593,29 @@ function main()
         history = []
     end
 
+    convergence_summary = VMCBoseHubbard.optimization_summary(
+        history,
+        args["max_iters"];
+        skipped = args["no-optimization"],
+    )
+    print_optimization_summary(convergence_summary)
+    write_optimization_summary(optimization_summary_file, convergence_summary)
+    write_parameters_file(parameters_file, args)
+
+    if wavefunction_opt isa JastrowWavefunction
+        write_jastrow_potentials(
+            joinpath(interaction_dir, "vr.dat"),
+            wavefunction_opt.vr,
+        )
+    elseif wavefunction_opt isa GutzwillerWavefunction
+        write_gutzwiller_parameter(
+            joinpath(interaction_dir, "kappa.dat"),
+            wavefunction_opt.κ,
+        )
+    end
+
     # ========================================================
-    # Final MC run
+    # Final VMC measurement
     # ========================================================
 
     final_result = nothing
@@ -625,11 +668,6 @@ function main()
 
     @timeit to "Write Results to Disk" begin
 
-        write_parameters_file(
-            parameters_file,
-            args
-        )
-
         write_energy_results(
             energy_file,
             U_over_t,
@@ -647,31 +685,6 @@ function main()
             final_result,
             lattice
         )
-
-        if wavefunction_opt isa JastrowWavefunction
-
-            vr_file = joinpath(
-                interaction_dir,
-                "vr.dat"
-            )
-
-            write_jastrow_potentials(
-                vr_file,
-                wavefunction_opt.vr
-            )
-
-        elseif wavefunction_opt isa GutzwillerWavefunction
-
-            kappa_file = joinpath(
-                interaction_dir,
-                "kappa.dat"
-            )
-
-            write_gutzwiller_parameter(
-                kappa_file,
-                wavefunction_opt.κ
-            )
-        end
 
         if args["save-history"]
 

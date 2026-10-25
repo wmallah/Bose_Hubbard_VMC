@@ -55,6 +55,8 @@ julia pigsfli.jl --help
 
   --eta ETA:                                            SR learning rate (type: Float64, default: 0.01)
 
+  --max-iters MAX_ITERS:                                Optimization iteration safety cap (type: Int64, default: 100)
+
   --seed SEED:                                          Random number generator seed (type: Int64, default: 1234)
 
   --no-optimization:                                    If set true, no optimization takes place
@@ -90,11 +92,23 @@ julia pigsfli.jl --help
 
   SR optimization uses Monte Carlo-aware stopping conditions. A run stops only
   after at least ten iterations when at least four of the latest five iterations
-  have no more than 5% of gradient components with an SNR above 3, the recent
-  five energies form a plateau within their combined SEM, and the applied RMS
-  parameter step is small. These defaults replace the old all-components-at-1-
-  sigma test, whose probability of passing decreases rapidly with the number of
-  Jastrow parameters.
+  have no more than the allowed number of gradient components with an SNR above
+  3, the recent five energies form a plateau within their combined SEM, and the
+  applied RMS parameter step is small. The allowed count is the 5% threshold
+  rounded down, with a minimum of one for multi-parameter states; the
+  one-parameter Gutzwiller state still requires its gradient to be unresolved.
+  If the hard iteration cap is reached first, the optimizer reports which
+  convergence checks failed. These defaults replace the old
+  all-components-at-1-sigma test, whose probability of passing decreases
+  rapidly with the number of Jastrow parameters.
+
+  After optimization, the CLI prints and saves the latest convergence
+  diagnostics in `optimization_summary.dat` beside the VMC outputs. This
+  package does not launch Pigsfli_Will.jl; use the reported status and saved
+  parameters to decide whether to run the separate QMC workflow or continue
+  VMC optimization. The optimized Jastrow parameters are in `vr.dat` and can
+  be supplied to a later run with `--jastrow-potentials`. The final
+  high-statistics measurement performed by this CLI is still a VMC measurement.
 
   Optimization blocks should span multiple correlated Monte Carlo sweeps. The
   CLI default is 5000 completed samples, which is 50 sweeps with the default 100
@@ -102,6 +116,68 @@ julia pigsfli.jl --help
   remain strongly correlated. Jastrow parameters are projected to mean zero
   after every update because a uniform shift is an unobservable normalization
   constant in the canonical ensemble.
+
+### Default-parameter study
+
+To measure autocorrelation and compare Stochastic Reconfiguration update sizes
+for the 1D `L = N = 16` system, run:
+
+```bash
+julia --project=VMCBoseHubbard VMCBoseHubbard/examples/default_parameter_study.jl
+```
+
+The study covers `U/t = 1.0, 3.3578, 6.0` for both trial-state families. It
+writes a per-sweep energy series and a blocking analysis to
+`VMCBoseHubbard/data/studies/`, plus the SR energy, gradient, parameter, and
+applied-update history for initial learning rates `0.0025, 0.005, 0.01, 0.02`
+and per-iteration decay multipliers `0.998, 0.98, 0.95, 0.90`. The optimizer
+multiplies the learning rate by the chosen factor after each update and records
+the rate used at each iteration.
+The longer default run uses 262,144 measured autocorrelation sweeps per case,
+after 4,000 equilibration sweeps. The blocking analysis can therefore reach
+8,192-sweep blocks while retaining at least 16 blocks. SR is allowed up to 50
+iterations, with 10,000 MC steps and 50,000-sample (500-sweep) blocks per
+iteration, after 2,000 equilibration steps.
+The autocorrelation run uses the same initial parameters as the normal entry
+point (`kappa = 1` or all-zero Jastrow coefficients), after the configured
+equilibration; it does not optimize the wavefunction first.
+The autocorrelation block size is one sweep (one sample per walker); blocking
+then doubles the sweep block size and reports the energy SEM and integrated
+autocorrelation estimate at each level. Use the plateau in that estimate to
+assess whether the optimization block size is adequate. These budgets are
+intended to provide a more useful convergence comparison than the initial
+short run, but the outputs still need to demonstrate a plateau; if they do
+not, extend `--mc-steps` further.
+
+The run budgets, interaction, trial-state, and study mode can be overridden;
+use `--help` for the full option list. For example, isolate the autocorrelation
+run at the intermediate interaction with a longer chain:
+
+```bash
+julia --project=VMCBoseHubbard VMCBoseHubbard/examples/default_parameter_study.jl \
+  --autocorrelation-only --interaction 3.3578 --mc-steps 50000
+```
+
+The full default study now includes 96 SR trajectories (four initial rates by
+four decay multipliers for six trial-state/interaction cases). To focus on the
+decay comparison using two of the faster initial rates, run:
+
+```bash
+julia --project=VMCBoseHubbard VMCBoseHubbard/examples/default_parameter_study.jl \
+  --updates-only --etas 0.01,0.02
+```
+
+Or select decay factors explicitly with `--eta-decays`, for example
+`--eta-decays 0.998,0.98,0.95,0.90`. The Monte Carlo seed is reset for each
+schedule within a physical case so schedules start with the same random stream.
+
+This script records evidence for a default-parameter decision but does not
+change production defaults automatically. Compare convergence and uncertainty
+across interactions and trial states before adopting new settings.
+Use the [study analysis notebook](VMCBoseHubbard/examples/default_parameter_study_analysis.ipynb)
+to plot the energy traces, blocking estimates, and SR update histories. It
+automatically selects the newest study output directory; rerun its load and
+plotting cells to refresh while a study is still running.
 
 ### Visualizing a random walk
 
