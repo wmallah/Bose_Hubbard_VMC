@@ -16,17 +16,28 @@ function parse_commandline()
 
     @add_arg_table s begin
         "--dimension", "-D"
-            help = "Lattice dimension (1D only currently)"
+            help = "Lattice dimension (1 or 2)"
             arg_type = Int
             required = true
-            default = 1
             dest_name = "D"
 
         "--length", "-L"
-            help = "Size of 1D lattice"
+            help = "Number of sites for a 1D lattice"
             arg_type = Int
-            required = true
+            default = nothing
             dest_name = "L"
+
+        "--length-x", "-x"
+            help = "Number of sites along x for a 2D lattice"
+            arg_type = Int
+            default = nothing
+            dest_name = "Lx"
+
+        "--length-y", "-y"
+            help = "Number of sites along y for a 2D lattice"
+            arg_type = Int
+            default = nothing
+            dest_name = "Ly"
 
         "--particle-number", "-N"
             help = "Total number of particles"
@@ -157,6 +168,10 @@ function parse_commandline()
             help = "Save SR optimization history"
             action = :store_true
 
+        "--save-walk-history"
+            help = "Save walker 1's configuration at every final MC step"
+            action = :store_true
+
         "--skip-timing"
             help = "Disable timing output"
             action = :store_true
@@ -166,16 +181,27 @@ function parse_commandline()
 
     Random.seed!(args["seed"])
 
-    if args["L"] <= 1
-        error("Please input a system size larger than one")
+    D = args["D"]
+    if D == 1
+        args["L"] === nothing && error("Please provide --length for a 1D lattice")
+        args["Lx"] === nothing && args["Ly"] === nothing ||
+            error("--length-x and --length-y are only valid for a 2D lattice")
+        args["L"] > 1 || error("Please input a 1D lattice length larger than one")
+        args["M"] = args["L"]
+    elseif D == 2
+        args["L"] === nothing ||
+            error("--length is for 1D; provide --length-x and --length-y for a 2D lattice")
+        args["Lx"] === nothing && error("Please provide --length-x for a 2D lattice")
+        args["Ly"] === nothing && error("Please provide --length-y for a 2D lattice")
+        args["Lx"] > 1 || error("Please input an x dimension larger than one")
+        args["Ly"] > 1 || error("Please input a y dimension larger than one")
+        args["M"] = args["Lx"] * args["Ly"]
+    else
+        error("Unsupported lattice dimension $D. Valid dimensions: 1, 2.")
     end
 
     if args["N"] == 0
         error("Please input a non-zero particle number")
-    end
-
-    if args["vr_init"] == [0.0]
-        args["vr_init"] = zeros(fld(args["L"], 2) + 1)
     end
 
     if args["n_max"] == -1
@@ -210,7 +236,14 @@ function write_parameters_file(
         println(io, "# System Parameters")
         println(io, "# ==================================================")
 
-        println(io, "L $(args["L"])")
+        println(io, "dimension $(args["D"])")
+        println(io, "M $(args["M"])")
+        if args["D"] == 1
+            println(io, "L $(args["L"])")
+        else
+            println(io, "Lx $(args["Lx"])")
+            println(io, "Ly $(args["Ly"])")
+        end
         println(io, "N $(args["N"])")
         println(io, "U $(args["U"])")
         println(io, "t $(args["t"])")
@@ -230,6 +263,7 @@ function write_parameters_file(
         println(io, "opt_num_MC_steps $(args["opt_num_MC_steps"])")
         println(io, "opt_num_equil_steps $(args["opt_num_equil_steps"])")
         println(io, "opt_block_size $(args["opt_block_size"])")
+        println(io, "max_iters $(args["max_iters"])")
 
         println(io)
 
@@ -295,19 +329,21 @@ end
 
 function write_density_density_correlation(
     filepath::String,
-    result
+    result,
+    lattice::VMCBoseHubbard.AbstractLattice
 )
 
+    shell_distances = lattice_shell_distances(lattice)[2:end]
     open(filepath, "w") do io
 
-        println(io, "# r   density_density_corr   sem")
+        println(io, "# distance   density_density_corr   sem")
 
-        for r in 1:length(result.mean_density_density_corr)
+        for shell in eachindex(result.mean_density_density_corr)
             println(
                 io,
-                "$(r) " *
-                "$(result.mean_density_density_corr[r]) " *
-                "$(result.sem_density_density_corr[r])"
+                "$(shell_distances[shell]) " *
+                "$(result.mean_density_density_corr[shell]) " *
+                "$(result.sem_density_density_corr[shell])"
             )
         end
     end
@@ -374,6 +410,22 @@ function write_sr_history(
 end
 
 
+function write_optimization_summary(filepath::String, summary)
+    open(filepath, "w") do io
+        println(io, "# VMC optimization convergence summary")
+        for key in keys(summary)
+            println(io, "$(key) $(getproperty(summary, key))")
+        end
+    end
+end
+
+function print_optimization_summary(summary)
+    println("\nVMC optimization summary:")
+    for key in keys(summary)
+        println("  $(key) = $(getproperty(summary, key))")
+    end
+end
+
 # ============================================================
 # Main
 # ============================================================
@@ -400,6 +452,8 @@ function main()
 
     D = args["D"]
     L = args["L"]
+    Lx = args["Lx"]
+    Ly = args["Ly"]
     N = args["N"]
     U = args["U"]
     t = args["t"]
@@ -407,6 +461,15 @@ function main()
     U_over_t = U / t
 
     trial_state = args["trial-state"]
+    lattice = if D == 1
+        Lattice1D(L)
+    else
+        Lattice2D(Lx, Ly)
+    end
+
+    if args["vr_init"] == [0.0]
+        args["vr_init"] = zeros(length(lattice_shell_distances(lattice)))
+    end
 
     # ========================================================
     # Output directory structure
@@ -421,7 +484,7 @@ function main()
 
     system_dir = joinpath(
         trial_state_dir,
-        "$(D)D/L$(L)_N$(N)"
+        D == 1 ? "1D/L$(L)_N$(N)" : "2D/Lx$(Lx)_Ly$(Ly)_N$(N)"
     )
 
     interaction_dir = joinpath(
@@ -461,11 +524,19 @@ function main()
         "sr_history.dat"
     )
 
+    optimization_summary_file = joinpath(
+        interaction_dir,
+        "optimization_summary.dat"
+    )
+
+    walk_history_file = joinpath(
+        interaction_dir,
+        "walk_history.csv"
+    )
+
     # ========================================================
     # Construct system
     # ========================================================
-
-    lattice = Lattice1D(L)
 
     sys = System(t, U, N, lattice)
 
@@ -522,15 +593,53 @@ function main()
         history = []
     end
 
+    convergence_summary = VMCBoseHubbard.optimization_summary(
+        history,
+        args["max_iters"];
+        skipped = args["no-optimization"],
+    )
+    print_optimization_summary(convergence_summary)
+    write_optimization_summary(optimization_summary_file, convergence_summary)
+    write_parameters_file(parameters_file, args)
+
+    if wavefunction_opt isa JastrowWavefunction
+        write_jastrow_potentials(
+            joinpath(interaction_dir, "vr.dat"),
+            wavefunction_opt.vr,
+        )
+    elseif wavefunction_opt isa GutzwillerWavefunction
+        write_gutzwiller_parameter(
+            joinpath(interaction_dir, "kappa.dat"),
+            wavefunction_opt.κ,
+        )
+    end
+
     # ========================================================
-    # Final MC run
+    # Final VMC measurement
     # ========================================================
 
     final_result = nothing
 
     @timeit to "High Statistics MC" begin
 
-        final_result = MC_integration(
+        configuration_metadata = Dict(
+            "dimension" => string(D),
+            "N" => string(N),
+            "U" => string(U),
+            "t" => string(t),
+            "U_over_t" => string(U_over_t),
+            "n_max" => string(args["n_max"]),
+            "trial_state" => trial_state,
+            "seed" => string(args["seed"])
+        )
+        if D == 1
+            configuration_metadata["L"] = string(L)
+        else
+            configuration_metadata["Lx"] = string(Lx)
+            configuration_metadata["Ly"] = string(Ly)
+        end
+
+        run_final_mc = history_io -> MC_integration(
             sys,
             wavefunction_opt,
             args["n_max"];
@@ -539,8 +648,18 @@ function main()
             num_walkers     = args["final_num_walkers"],
             num_MC_steps    = args["final_num_MC_steps"],
             num_equil_steps = args["final_num_equil_steps"],
-            block_size      = args["final_block_size"]
+            block_size      = args["final_block_size"],
+            configuration_history = history_io,
+            configuration_metadata = configuration_metadata
         )
+
+        if args["save-walk-history"]
+            open(walk_history_file, "w") do io
+                final_result = run_final_mc(io)
+            end
+        else
+            final_result = run_final_mc(nothing)
+        end
     end
 
     # ========================================================
@@ -548,11 +667,6 @@ function main()
     # ========================================================
 
     @timeit to "Write Results to Disk" begin
-
-        write_parameters_file(
-            parameters_file,
-            args
-        )
 
         write_energy_results(
             energy_file,
@@ -568,33 +682,9 @@ function main()
 
         write_density_density_correlation(
             density_density_corr_file,
-            final_result
+            final_result,
+            lattice
         )
-
-        if wavefunction_opt isa JastrowWavefunction
-
-            vr_file = joinpath(
-                interaction_dir,
-                "vr.dat"
-            )
-
-            write_jastrow_potentials(
-                vr_file,
-                wavefunction_opt.vr
-            )
-
-        elseif wavefunction_opt isa GutzwillerWavefunction
-
-            kappa_file = joinpath(
-                interaction_dir,
-                "kappa.dat"
-            )
-
-            write_gutzwiller_parameter(
-                kappa_file,
-                wavefunction_opt.κ
-            )
-        end
 
         if args["save-history"]
 

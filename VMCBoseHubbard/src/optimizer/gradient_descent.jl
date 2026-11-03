@@ -42,6 +42,79 @@ function snr_vector(g::Vector{Float64}, SE_g::Vector{Float64};
     return snr
 end
 
+function max_resolved_gradient_components(num_params::Int, max_fraction::Float64)
+    num_params >= 1 || throw(ArgumentError("num_params must be positive"))
+    0.0 <= max_fraction <= 1.0 ||
+        throw(ArgumentError("max_fraction must be between 0 and 1"))
+
+    allowed = floor(Int, max_fraction * num_params)
+    return num_params > 1 && max_fraction > 0.0 ? max(1, allowed) : allowed
+end
+
+function optimization_summary(history::AbstractVector, max_iters::Int; skipped::Bool = false)
+    max_iters >= 1 || throw(ArgumentError("max_iters must be positive"))
+
+    if skipped
+        return (;
+            status = "skipped",
+            iterations = 0,
+            max_iters,
+            converged = false,
+            energy = missing,
+            sem_energy = missing,
+            energy_span = missing,
+            energy_resolution = missing,
+            energy_flat = false,
+            resolved_gradients = missing,
+            allowed_resolved_gradients = missing,
+            gradient_unresolved = false,
+            step_small = false,
+            qualifying_iterations = 0,
+            required_hits = missing,
+        )
+    elseif isempty(history)
+        return (;
+            status = "stopped_before_valid_iteration",
+            iterations = 0,
+            max_iters,
+            converged = false,
+            energy = missing,
+            sem_energy = missing,
+            energy_span = missing,
+            energy_resolution = missing,
+            energy_flat = false,
+            resolved_gradients = missing,
+            allowed_resolved_gradients = missing,
+            gradient_unresolved = false,
+            step_small = false,
+            qualifying_iterations = 0,
+            required_hits = missing,
+        )
+    end
+
+    latest = last(history)
+    status = latest.converged ? "converged" :
+             length(history) >= max_iters ? "max_iterations_reached" :
+             "stopped_early"
+    return (;
+        status,
+        iterations = length(history),
+        max_iters,
+        converged = latest.converged,
+        energy = latest.energy,
+        sem_energy = latest.sem_energy,
+        energy_span = latest.energy_span,
+        energy_resolution = latest.energy_resolution,
+        energy_flat = latest.energy_flat,
+        resolved_gradients = latest.num_resolved,
+        allowed_resolved_gradients = latest.max_resolved_components,
+        gradient_unresolved = latest.gradient_unresolved,
+        step_small = latest.step_small,
+        qualifying_iterations = latest.qualifying_iterations,
+        required_hits = latest.required_hits,
+    )
+end
+
 
 # ── Stochastic Reconfiguration optimizer ──────────────────────────────────────
 #=
@@ -65,6 +138,7 @@ possibly clipped update.
 kwargs
 ------
 η              : learning rate
+η_decay        : multiplicative learning-rate decay applied after each update
 λ              : diagonal regularization of S
 max_step       : hard clip on ||Δv||; useful for Gutzwiller to avoid large
                  steps early in optimization (set to Inf to disable)
@@ -82,6 +156,7 @@ function optimize_SR(sys::System,
                      wf::Wavefunction,
                      n_max::Int;
                      η               ::Float64 = 0.05,
+                     η_decay         ::Float64 = 0.998,
                      λ               ::Float64 = 1e-3,
                      max_step        ::Float64 = Inf,
                      num_walkers     ::Int     = 200,
@@ -104,12 +179,16 @@ function optimize_SR(sys::System,
     quality_history = Bool[]
     prev_E = nothing
     prev_err = nothing
+    converged_now = false
 
     energy_window >= 1 || throw(ArgumentError("energy_window must be positive"))
     1 <= required_hits <= energy_window ||
         throw(ArgumentError("required_hits must be between 1 and energy_window"))
+    max_iters >= 1 || throw(ArgumentError("max_iters must be positive"))
     0.0 <= max_resolved_fraction <= 1.0 ||
         throw(ArgumentError("max_resolved_fraction must be between 0 and 1"))
+    0.0 < η_decay <= 1.0 ||
+        throw(ArgumentError("η_decay must be greater than 0 and at most 1"))
 
     for iter in 1:max_iters
 
@@ -145,6 +224,8 @@ function optimize_SR(sys::System,
         snr            = snr_vector(g, SE_g; zero_tol = 1e-16)
         num_resolved   = count(x -> x > z_grad, snr)
         resolved_fraction = num_resolved / length(g)
+        max_resolved_components =
+            max_resolved_gradient_components(length(g), max_resolved_fraction)
         predicted_drop = dot(g, Δv)
         rms_step       = norm(Δv) / sqrt(length(Δv))
 
@@ -159,6 +240,7 @@ function optimize_SR(sys::System,
         println("  Gradient norm    = $(round(norm(g), digits=6))")
         println("  Max SNR          = $(round(maximum(snr), digits=4))")
         println("  Resolved comps   = $num_resolved / $(length(g))")
+        println("  Allowed resolved = $max_resolved_components / $(length(g))")
         println("  Applied RMS step = $(round(rms_step, digits=8))")
 
         if prev_E !== nothing
@@ -167,17 +249,6 @@ function optimize_SR(sys::System,
             println("  |ΔE|             = $(round(ΔE, digits=8))")
             println("  σ(ΔE)           = $(round(ΔE_err, digits=8))")
         end
-
-        push!(history, (
-            wavefunction   = params,
-            energy         = E,
-            sem_energy     = err,
-            gradient       = copy(g),
-            snr            = copy(snr),
-            predicted_drop = predicted_drop,
-            rms_step       = rms_step,
-            resolved_fraction = resolved_fraction
-        ))
 
         # ── Convergence test ──────────────────────────────────────────────────
         push!(energy_history, E)
@@ -189,17 +260,40 @@ function optimize_SR(sys::System,
         energy_resolution = z_energy * sqrt(sum(recent_errors .^ 2))
         energy_flat = length(recent_energies) == energy_window &&
                       energy_span <= energy_resolution
-        gradient_unresolved = resolved_fraction <= max_resolved_fraction
+        gradient_unresolved = num_resolved <= max_resolved_components
         step_small = rms_step <= step_atol + step_rtol *
                      max(norm(params) / sqrt(length(params)), 1.0)
         push!(quality_history, gradient_unresolved && step_small)
         recent_quality = @view quality_history[first_window:end]
         converged_now = iter >= min_iters && energy_flat &&
                         count(recent_quality) >= required_hits
+        qualifying_iterations = count(recent_quality)
+
+        push!(history, (
+            wavefunction   = params,
+            learning_rate  = η,
+            energy         = E,
+            sem_energy     = err,
+            gradient       = copy(g),
+            snr            = copy(snr),
+            predicted_drop = predicted_drop,
+            rms_step       = rms_step,
+            resolved_fraction = resolved_fraction,
+            energy_span    = energy_span,
+            energy_resolution = energy_resolution,
+            energy_flat    = energy_flat,
+            num_resolved   = num_resolved,
+            max_resolved_components = max_resolved_components,
+            gradient_unresolved = gradient_unresolved,
+            step_small     = step_small,
+            qualifying_iterations = qualifying_iterations,
+            required_hits  = required_hits,
+            converged      = converged_now,
+        ))
 
         if converged_now
             println("Converged at iteration $iter.")
-            println("  qualifying iterations = ", count(recent_quality))
+            println("  qualifying iterations = ", qualifying_iterations)
             println("  energy_flat        = ", energy_flat)
             println("  step_small        = ", step_small)
             break
@@ -209,7 +303,12 @@ function optimize_SR(sys::System,
         wf       = unflatten_params(flatten_params(wf) .- Δv, wf, n_max)
         prev_E   = E
         prev_err = err
-        η       *= 0.998
+        η       *= η_decay
+    end
+
+    if !converged_now && length(history) == max_iters
+        diagnostics = optimization_summary(history, max_iters)
+        @warn "Reached max_iters=$max_iters before satisfying the convergence criteria." diagnostics
     end
 
     return wf, history

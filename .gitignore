@@ -31,6 +31,7 @@ Manifest.toml
 
 # Test scrips
 **/test/**
+!VMCBoseHubbard/test/configuration_history_test.jl
 
 # Documentation
 **/documentation/**

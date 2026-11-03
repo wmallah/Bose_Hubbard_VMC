@@ -14,13 +14,13 @@ struct GutzwillerWavefunction{T <: Real} <: Wavefunction
     log_f::Vector{T}
 end
 
-#=
+"""
 Purpose: construct and store Gutzwiller coefficients from Gutzwiller variational parameter (κ)
 Input: κ (Gutzwiller variational parameter), n_max (maximum site occupancy), logfact (pre-generated factorial values)
 Output: GutzwillerWavefunction struct
 Author: Will Mallah
 Last Updated: 06/09/2026
-=#
+"""
 function GutzwillerWavefunction(κ::Real, n_max::Int; logfact = LOGFACTORIAL_TABLE)
     log_f = [-0.5 * κ * n^2 - 0.5 * logfact[n + 1] for n in 0:n_max]
     log_Z = logsumexp(2 .* log_f)
@@ -30,14 +30,19 @@ end
 
 # ── Jastrow ───────────────────────────────────────────────────────────────────
 
-# Store real-space Jastrow variational parameters/Jastrow potentials (v_r)
+# Store one real-space Jastrow potential (v_r) per distance shell.
 struct JastrowWavefunction{T <: Real} <: Wavefunction
-    vr::Vector{T}    # fld(L, 2) + 1 real-space coefficients
-end
-
-# Constructor with gauge fixing:
-# set the largest-separation Jastrow potential to zero.
-function JastrowWavefunction(vr::Vector{T}) where {T <: Real}
-    vr_gauge_fixed = vr .- vr[end]
-    return JastrowWavefunction{T}(copy(vr_gauge_fixed))
+    vr::Vector{T}
+    
+    """
+    Purpose: construct and store gauge-fixed Jastrow potentials
+    Input: vr (vector of real-space Jastrow potentials)
+    Output: JastrowWavefunction struct with gauge-fixed potentials
+    Author: Will Mallah
+    Last Updated: 10/03//2026
+    """
+    function JastrowWavefunction(vr::Vector{T}) where {T <: Real}
+        vr_gauge_fixed = vr .- vr[end]
+        return new{T}(copy(vr_gauge_fixed))
+    end
 end

@@ -1,12 +1,12 @@
 # measurements.jl
 
-#=
+"""
 Purpose: calculate local potential energy (trial state independent)
 Input: n (vector of integers describing the system configuration, U (interaction parameter)
 Output: local potential energy for given configuration
 Author: Will Mallah
 Last Updated: 06/09/2026
-=#
+"""
 function local_potential_energy(n::Vector{Int}, U::Float64)
     Epot = 0.0
     for ni in n
@@ -16,37 +16,77 @@ function local_potential_energy(n::Vector{Int}, U::Float64)
 end
 
 
-#=
-Purpose: calculate particle correlation function for a given configuration
-Input: n (vector of integers describing the system configuration
-Output: particle correlation function for given configuration
+"""
+Purpose: calculate the density-density correlation averaged over each nonzero distance shell.
+Input: n (system configuration), lattice (periodic lattice)
+Output: vector of shell-averaged density-density correlations, excluding the on-site shell
 Author: Will Mallah
-Last Updated: 07/01/2026
-=#
-function local_density_density_correlation(n::Vector{Int})
-    L = length(n)
-    Rmax = fld(L, 2)
-    C = zeros(Float64, Rmax)
+Last Updated: 10/03/2026
+Notes: The 1D normalization matches the previous average over sites at each separation.
+"""
+function local_density_density_correlation(n::Vector{Int}, lattice::AbstractLattice)
+    shell_indices = lattice_shell_indices(lattice)
+    shell_pair_counts = _nonzero_shell_pair_counts(shell_indices)
+    return _local_density_density_correlation(n, shell_indices, shell_pair_counts)
+end
 
-    for d in 1:Rmax
-        for i in 1:L
-            j = mod1(i + d, L)
-            C[d] += n[i] * n[j]
+"""
+Purpose: count ordered site pairs in each nonzero distance shell.
+Input: shell_indices (matrix of lattice shell indices)
+Output: vector of ordered-pair counts, excluding the on-site shell
+Author: Will Mallah
+Last Updated: 10/03/2026
+"""
+function _nonzero_shell_pair_counts(shell_indices::Matrix{Int})
+    shell_pair_counts = zeros(Int, maximum(shell_indices) - 1)
+    for shell_index in shell_indices
+        if shell_index > 1
+            shell_pair_counts[shell_index - 1] += 1
+        end
+    end
+    return shell_pair_counts
+end
+
+"""
+Purpose: calculate density-density correlations from precomputed shell data.
+Input: n (system configuration), shell_indices (pair-to-shell matrix),
+       shell_pair_counts (ordered-pair count for each nonzero shell)
+Output: vector of shell-averaged density-density correlations
+Author: Will Mallah
+Last Updated: 10/03/2026
+"""
+function _local_density_density_correlation(
+    n::Vector{Int},
+    shell_indices::Matrix{Int},
+    shell_pair_counts::Vector{Int}
+)
+    M = length(n)
+    size(shell_indices) == (M, M) ||
+        throw(DimensionMismatch("configuration size must match lattice site count"))
+    length(shell_pair_counts) == maximum(shell_indices) - 1 ||
+        throw(DimensionMismatch("pair counts must match nonzero lattice distance shells"))
+
+    correlations = zeros(Float64, length(shell_pair_counts))
+    for i in 1:M, j in 1:M
+        shell_index = shell_indices[i, j]
+        if shell_index > 1
+            correlations[shell_index - 1] += n[i] * n[j]
         end
     end
 
-    return C / L
+    return correlations ./ shell_pair_counts
 end
 
 
 # ── Gutzwiller ────────────────────────────────────────────────────────────────
-#=
+"""
 Purpose: calculate local kinetic energy for the Gutzwiller trial state
-Input: n (vector of integers describing the system configuration, t (hopping parameter), n_max (maximum site occupancy), ψ (wavefunction struct), lattice (lattice struct)
+Input: n (system configuration), t (hopping parameter), n_max (maximum site occupancy),
+       ψ (Jastrow wavefunction), lattice, shell_indices (matrix of lattice shell indices)
 Output: local kinetic energy of given configuration for Gutzwiller trial state
 Author: Will Mallah
 Last Updated: 06/09/2026
-=#
+"""
 function local_kinetic_energy_gutzwiller(
     n::Vector{Int},
     t::Float64,
@@ -55,10 +95,10 @@ function local_kinetic_energy_gutzwiller(
     lattice
 )
     log_f = ψ.log_f
-    L = length(n)
+    M = length(n)
     E_kin = 0.0
 
-    for i in 1:L
+    for i in 1:M
         for j in lattice.neighbors[i]
             if j > i
                 # hop j → i
@@ -80,13 +120,14 @@ function local_kinetic_energy_gutzwiller(
 end
 
 
-#=
+"""
 Purpose: calculate total local energy for the Gutzwiller trial state
-Input: n (vector of integers describing the system configuration, ψ (wavefunction struct), sys (system struct), n_max (maximum site occupancy)
+Input: n (system configuration), sys (system struct), n_max (maximum site occupancy),
+       ψ (Jastrow wavefunction), shell_indices (optional precomputed shell-index matrix)
 Output: total local energy of given configuration for Gutzwiller trial state
 Author: Will Mallah
 Last Updated: 06/09/2026
-=#
+"""
 function local_energy_gutzwiller(n::Vector{Int}, ψ::GutzwillerWavefunction, sys::System, n_max::Int64)
     t, U = sys.t, sys.U
     lattice = sys.lattice
@@ -97,38 +138,52 @@ function local_energy_gutzwiller(n::Vector{Int}, ψ::GutzwillerWavefunction, sys
 end
 
 
+"""
+Purpose: calculate the derivative of the Gutzwiller log-wavefunction with respect to κ.
+Input: n (vector of integers describing the system configuration)
+Output: derivative of the log-wavefunction with respect to κ
+Author: Will Mallah
+Last Updated: 10/03/2026
+"""
+function logpsi_derivative_gutzwiller(n::Vector{Int})
+    return -0.5 * sum(n .^ 2)
+end
+
+
 # ── Jastrow ───────────────────────────────────────────────────────────────────
-#=
-Purpose: calculate local kinetic energy for the Jastrow trial state
-Input: n (vector of integers describing the system configuration, t (hopping parameter), n_max (maximum site occupancy), ψ (wavefunction struct), lattice (lattice struct)
+"""
+Purpose: calculate local kinetic energy for the Jastrow trial state.
+Input: n (system configuration), t (hopping parameter), n_max (maximum site occupancy),
+       ψ (Jastrow wavefunction), lattice, shell_indices (matrix of lattice shell indices)
 Output: local kinetic energy of given configuration for Jastrow trial state
 Author: Will Mallah
 Last Updated: 06/09/2026
-=#
+"""
 function local_kinetic_energy_jastrow(
     n::Vector{Int},
     t::Float64,
     n_max::Int,
     ψ::JastrowWavefunction,
-    lattice
+    lattice::AbstractLattice,
+    shell_indices::Matrix{Int}
 )
-    L = length(n)
+    M = length(n)
     Ekin = 0.0
 
-    for i in 1:L
+    for i in 1:M
         for j in lattice.neighbors[i]
             if j > i
                 # hop j -> i gives a_i^† a_j. The Jastrow ratio here excludes
                 # the condensate state's 1/sqrt(prod(n_i!)) factor; combining
                 # that factor with the bosonic matrix element leaves n[j].
                 if n[j] > 0 && n[i] < n_max
-                    Δlogpsi = compute_delta_logpsi_realspace(n, j, i, ψ)
+                    Δlogpsi = compute_delta_logpsi_jastrow(n, j, i, ψ, shell_indices)
                     Ekin -= t * n[j] * exp(Δlogpsi)
                 end
 
                 # hop i -> j gives a_j^† a_i
                 if n[i] > 0 && n[j] < n_max
-                    Δlogpsi = compute_delta_logpsi_realspace(n, i, j, ψ)
+                    Δlogpsi = compute_delta_logpsi_jastrow(n, i, j, ψ, shell_indices)
                     Ekin -= t * n[i] * exp(Δlogpsi)
                 end
             end
@@ -139,157 +194,101 @@ function local_kinetic_energy_jastrow(
 end
 
 
-#=
+"""
 Purpose: calculate total local energy for the Jastrow trial state
 Input: n (vector of integers describing the system configuration, ψ (wavefunction struct), sys (system struct), n_max (maximum site occupancy)
 Output: total local energy of given configuration for Jastrow trial state
 Author: Will Mallah
 Last Updated: 06/09/2026
-=#
+"""
 function local_energy_jastrow(
     n::Vector{Int},
     sys::System,
     n_max::Int,
-    ψ::JastrowWavefunction
+    ψ::JastrowWavefunction,
+    shell_indices::Matrix{Int} = lattice_shell_indices(sys.lattice)
 )
     t, U = sys.t, sys.U
     lattice = sys.lattice
 
     Epot = local_potential_energy(n, U)
-    Ekin = local_kinetic_energy_jastrow(n, t, n_max, ψ, lattice)
+    Ekin = local_kinetic_energy_jastrow(n, t, n_max, ψ, lattice, shell_indices)
     return Ekin + Epot, Ekin, Epot
 end
 
 
-#=
-Purpose: construct and store Gutzwiller coefficients from Gutzwiller variational parameter (κ)
-Input: κ (Gutzwiller variational parameter), n_max (maximum site occupancy), logfact (pre-generated factorial values)
-Output: GutzwillerWavefunction struct
+"""
+Purpose: return the derivatives of the real-space Jastrow log-wavefunction with respect to its shell potentials.
+Input: n (vector of integers describing the system configuration), lattice (lattice struct)
+Output: vector of derivatives of the log-wavefunction with respect to each shell potential
 Author: Will Mallah
-Last Updated: 06/09/2026
-=#
-function logpsi_derivatives_realspace(n::Vector{Int})
-    L = length(n)
-    Rmax = fld(L, 2)
-    O = zeros(Float64, Rmax + 1)
+Last Updated: 10/03/2026
+Notes: Uses symmetric pair counting, so each ordered site pair contributes half to its distance shell.
+"""
+function logpsi_derivatives_jastrow(n::Vector{Int}, lattice::AbstractLattice)
+    return _logpsi_derivatives_jastrow(n, lattice_shell_indices(lattice))
+end
 
-    for idx in 1:(Rmax + 1)
-        R = idx - 1
 
-        # prefactor matches the symmetric Jastrow convention
-        # logψ = -∑_R prefactor(R) * v_R * ∑_i n_i n_{i+R}
-        #
-        # R = 0 gets 1/2 from the original symmetric
-        # density-density factor 1/2; S_0 itself is NOT double-counted.
-        # For even L, R = L/2 also gets 1/2 because S_{L/2}
-        # contains each opposite-site pair twice.
-        prefactor = 1.0
-        if R == 0
-            prefactor = 0.5
-        elseif iseven(L) && R == Rmax
-            prefactor= 0.5
-        end
+"""
+Purpose: calculate Jastrow log-wavefunction derivatives using precomputed shell indices.
+Input: n (vector of integers describing the system configuration), shell_indices (matrix of lattice shell indices)
+Output: vector of derivatives of the log-wavefunction with respect to each shell potential
+Author: Will Mallah
+Last Updated: 10/03/2026
+Notes: Each shell derivative sums -n[i] * n[j] / 2 over all ordered site pairs in that shell.
+"""
+function _logpsi_derivatives_jastrow(n::Vector{Int}, shell_indices::Matrix{Int})
+    M = length(n)
+    size(shell_indices) == (M, M) ||
+        throw(DimensionMismatch("configuration size must match lattice site count"))
 
-        SR = 0.0
-        for i in 1:L
-            j = mod1(i + R, L)
-            SR += n[i] * n[j]
-        end
-
-        O[idx] = -prefactor * SR
+    O = zeros(Float64, maximum(shell_indices))
+    for i in 1:M, j in 1:M
+        O[shell_indices[i, j]] -= 0.5 * n[i] * n[j]
     end
 
     return O
 end
 
 
-#=
-Purpose: compute the change in the log of the Jastrow exponetial piece of the wavefunction
-Input: n (system configuration), from_site (hop source site), to_site (hop target site), ψ (wavefunction)
-Output: change in the log of the Jastrow exponetial piece of the wavefunction
+"""
+Purpose: calculate the change in the Jastrow log-wavefunction for a single particle hop.
+Input: n (system configuration), from_site (hop source site), to_site (hop target site),
+       ψ (Jastrow wavefunction), shell_indices (matrix of lattice shell indices)
+Output: change in the Jastrow log-wavefunction
 Author: Will Mallah
-Last Updated: 06/09/2026
-=#
-function compute_delta_logpsi_realspace(
+Last Updated: 10/03/2026
+Notes: Uses symmetric pair counting and only sums contributions involving either hopped site.
+"""
+function compute_delta_logpsi_jastrow(
     n::Vector{Int},
     from_site::Int,
     to_site::Int,
-    ψ::JastrowWavefunction
+    ψ::JastrowWavefunction,
+    shell_indices::Matrix{Int}
 )
-    # Extract Jastrow potentials from wavefunction struct
-    vr = ψ.vr
-    # Extract the system size from the length of the configuration vector
-    L = length(n)
-    # Define the maximum difference between two sites on our 1D periodic lattice
-    Rmax = fld(L, 2)
-
-    # Assert quantities to ensure physical laws
-    @assert 1 <= from_site <= L
-    @assert 1 <= to_site <= L
+    M = length(n)
+    size(shell_indices) == (M, M) ||
+        throw(DimensionMismatch("configuration size must match lattice site count"))
+    length(ψ.vr) == maximum(shell_indices) ||
+        throw(DimensionMismatch("Jastrow parameter count must match the lattice distance-shell count"))
+    checkbounds(Bool, n, from_site) || throw(BoundsError(n, from_site))
+    checkbounds(Bool, n, to_site) || throw(BoundsError(n, to_site))
     @assert from_site != to_site
     @assert n[from_site] > 0
-    # Short-hand notation
-    a = from_site
-    b = to_site
-
-    # Initialize the quantitiy we want to compute
+    vr = ψ.vr
     Δlogpsi = 0.0
 
-    # Sum over site distances using Julia indexing (idx = 1 --> R = 0, idx = Rmax + 1 --> R = Rmax)
-    for idx in 1:(Rmax + 1)
-        R = idx - 1
-        
-        # Symmetric real-space Jastrow convention:
-        # logψ = -∑_R c_R v_R ∑_i n_i n_{i+R}
-        #
-        # R = 0 gets 1/2 from the original symmetric
-        # density-density factor 1/2; S_0 itself is NOT double-counted.
-        # For even L, R = L/2 also gets 1/2 because S_{L/2}
-        # contains each opposite-site pair twice.
-        prefactor = 1.0
-        if R == 0
-            prefactor = 0.5
-        elseif iseven(L) && R == Rmax
-            prefactor= 0.5
-        end
-
-        # The "weights" in the sum we are computing are the Jastrow potentials
-        weight = prefactor * vr[idx]
-
-        # 
-        affected_i = unique((
-            a,
-            b,
-            mod1(a - R, L),
-            mod1(b - R, L),
-        ))
-
-        # Initialize old and new operator values
-        old_local = 0.0
-        new_local = 0.0
-
-        # Only sum over sites which are affected by the hopping move (won't cancel exactly in the sum)
-        for i in affected_i
-            # Distance from i site
-            j = mod1(i + R, L)
-
-            # Asssign old operator values
-            ni_old = n[i]
-            nj_old = n[j]
-
-            # Assign new operators from hopping move
-            ni_new = ni_old + (i == b ? 1 : 0) - (i == a ? 1 : 0)
-            nj_new = nj_old + (j == b ? 1 : 0) - (j == a ? 1 : 0)
-
-            # Sum non-cancelling terms
-            old_local += ni_old * nj_old
-            new_local += ni_new * nj_new
-        end
-
-        # Sum Jastrow part of ratio
-        ΔSR = (new_local - old_local)
-        Δlogpsi -= weight * ΔSR
+    for j in 1:M
+        Δlogpsi -=
+            (vr[shell_indices[to_site, j]] - vr[shell_indices[from_site, j]]) * n[j]
     end
+    Δlogpsi -= 0.5 * (
+        vr[shell_indices[from_site, from_site]] +
+        vr[shell_indices[to_site, to_site]] -
+        2 * vr[shell_indices[from_site, to_site]]
+    )
 
     return Δlogpsi
 end
